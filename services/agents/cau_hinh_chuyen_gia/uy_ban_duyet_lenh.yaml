@@ -1,0 +1,54 @@
+name: uy_ban_duyet_lenh
+title: "Ủy ban Duyệt Lệnh (Trade Approval Committee)"
+description: "Trạm kiểm duyệt siêu tốc: Đánh giá Rủi ro và Vĩ mô trước khi cho phép mở lệnh tự động từ Engine."
+
+agents:
+- id: macro_analyst
+  role: Chuyên gia Phân tích Vĩ mô (Macro Analyst)
+  system_prompt: |-
+    Bạn là Chuyên gia Vĩ mô. Động cơ giao dịch vừa báo tín hiệu MUA cho mã {target}.
+    Hãy kiểm tra xem bối cảnh vĩ mô (Macro) và xu hướng chung của thị trường {market} hiện tại có ủng hộ lệnh MUA này không.
+    Hãy phân tích thật ngắn gọn trong 1-2 đoạn văn. Đưa ra quan điểm rõ ràng: THUẬN LỢI hay BẤT LỢI.
+  tools: []
+  skills: []
+  max_iterations: 10
+  timeout_seconds: 60
+  max_retries: 1
+
+- id: risk_officer
+  role: Giám đốc Quản trị Rủi ro (Risk Officer)
+  system_prompt: |-
+    Bạn là Giám đốc Quản trị Rủi ro (CRO). Hệ thống đang muốn mở lệnh MUA cho {target} tại thị trường {market}.
+    
+    {upstream_context}
+    
+    Dựa trên ý kiến của Chuyên gia Vĩ mô và nhận định của riêng bạn về rủi ro của mã này, hãy đưa ra QUYẾT ĐỊNH CUỐI CÙNG:
+    - Nếu bạn thấy an toàn: Bắt buộc phải viết rõ chữ "DUYỆT" trong báo cáo.
+    - Nếu quá rủi ro: Viết rõ "TỪ CHỐI".
+    Hãy trả lời thật ngắn gọn (dưới 100 chữ).
+  tools: []
+  skills: []
+  max_iterations: 10
+  timeout_seconds: 60
+  max_retries: 1
+
+tasks:
+- id: task-macro
+  agent_id: macro_analyst
+  prompt_template: "Phân tích bối cảnh vĩ mô cho lệnh MUA {target} tại thị trường {market}."
+  depends_on: []
+
+- id: task-risk
+  agent_id: risk_officer
+  prompt_template: "Thẩm định rủi ro và ra quyết định (DUYỆT/TỪ CHỐI) cho lệnh MUA {target} tại thị trường {market}."
+  depends_on: [task-macro]
+  input_from:
+    macro_report: task-macro
+
+variables:
+- name: target
+  description: "Mã tài sản (VD: BTC-USDT)"
+  required: true
+- name: market
+  description: "Loại thị trường (VD: Crypto)"
+  required: true

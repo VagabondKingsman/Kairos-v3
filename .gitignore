@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.env
+env/
+venv/
+.venv/
+
+# Data & Logs
+# Giữ lại cấu trúc thư mục nhưng bỏ qua dữ liệu nặng
+data/**
+!data/.gitkeep
+
+# Logs
+*.log
+logs/
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.env
+frontend/.env.local
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db

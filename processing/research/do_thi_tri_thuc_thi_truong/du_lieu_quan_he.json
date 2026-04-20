@@ -1,0 +1,261 @@
+{
+  "phien_ban": "1.0",
+  "mo_ta": "Ban do quan he tai san Kairos — seed data",
+  "quan_he": [
+    {
+      "tu": "BTC-USDT",
+      "den": "ETH-USDT",
+      "he_so": 0.85,
+      "loai": "tuong_quan",
+      "chu_de": [
+        "crypto",
+        "risk-on"
+      ]
+    },
+    {
+      "tu": "BTC-USDT",
+      "den": "GOLD-USD",
+      "he_so": 0.55,
+      "loai": "tuong_quan",
+      "chu_de": [
+        "tru_gia_tri",
+        "lam_phat"
+      ]
+    },
+    {
+      "tu": "BTC-USDT",
+      "den": "DXY",
+      "he_so": -0.65,
+      "loai": "tuong_quan",
+      "chu_de": [
+        "usd",
+        "vi_mo"
+      ]
+    },
+    {
+      "tu": "BTC-USDT",
+      "den": "SPX",
+      "he_so": 0.6,
+      "loai": "tuong_quan",
+      "chu_de": [
+        "risk-on",
+        "vi_mo"
+      ]
+    },
+    {
+      "tu": "ETH-USDT",
+      "den": "SOL-USDT",
+      "he_so": 0.8,
+      "loai": "tuong_quan",
+      "chu_de": [
+        "crypto",
+        "layer1"
+      ]
+    },
+    {
+      "tu": "ETH-USDT",
+      "den": "BNB-USDT",
+      "he_so": 0.75,
+      "loai": "tuong_quan",
+      "chu_de": [
+        "crypto",
+        "exchange_token"
+      ]
+    },
+    {
+      "tu": "DXY",
+      "den": "GOLD-USD",
+      "he_so": -0.7,
+      "loai": "tuong_quan",
+      "chu_de": [
+        "usd",
+        "lam_phat",
+        "vi_mo"
+      ]
+    },
+    {
+      "tu": "DXY",
+      "den": "EUR-USD",
+      "he_so": -0.9,
+      "loai": "tuong_quan",
+      "chu_de": [
+        "forex",
+        "vi_mo"
+      ]
+    },
+    {
+      "tu": "FED_RATE",
+      "den": "DXY",
+      "he_so": 0.6,
+      "loai": "nguyen_nhan",
+      "chu_de": [
+        "lai_suat",
+        "vi_mo"
+      ]
+    },
+    {
+      "tu": "FED_RATE",
+      "den": "GOLD-USD",
+      "he_so": -0.55,
+      "loai": "nguyen_nhan",
+      "chu_de": [
+        "lai_suat",
+        "lam_phat"
+      ]
+    },
+    {
+      "tu": "FED_RATE",
+      "den": "BTC-USDT",
+      "he_so": -0.5,
+      "loai": "nguyen_nhan",
+      "chu_de": [
+        "lai_suat",
+        "crypto"
+      ]
+    },
+    {
+      "tu": "CPI_US",
+      "den": "GOLD-USD",
+      "he_so": 0.65,
+      "loai": "nguyen_nhan",
+      "chu_de": [
+        "lam_phat",
+        "vi_mo"
+      ]
+    },
+    {
+      "tu": "CPI_US",
+      "den": "FED_RATE",
+      "he_so": 0.7,
+      "loai": "nguyen_nhan",
+      "chu_de": [
+        "lam_phat",
+        "lai_suat"
+      ]
+    },
+    {
+      "tu": "SPX",
+      "den": "NVDA",
+      "he_so": 0.75,
+      "loai": "tuong_quan",
+      "chu_de": [
+        "co_phieu",
+        "tech"
+      ]
+    },
+    {
+      "tu": "SPX",
+      "den": "AAPL",
+      "he_so": 0.8,
+      "loai": "tuong_quan",
+      "chu_de": [
+        "co_phieu",
+        "tech"
+      ]
+    },
+    {
+      "tu": "VN30",
+      "den": "VCB",
+      "he_so": 0.78,
+      "loai": "tuong_quan",
+      "chu_de": [
+        "co_phieu",
+        "viet_nam",
+        "ngan_hang"
+      ]
+    },
+    {
+      "tu": "VN30",
+      "den": "VHM",
+      "he_so": 0.7,
+      "loai": "tuong_quan",
+      "chu_de": [
+        "co_phieu",
+        "viet_nam",
+        "bat_dong_san"
+      ]
+    },
+    {
+      "tu": "VN30",
+      "den": "DXY",
+      "he_so": -0.45,
+      "loai": "tuong_quan",
+      "chu_de": [
+        "usd",
+        "viet_nam"
+      ]
+    },
+    {
+      "tu": "OIL-WTI",
+      "den": "XLE",
+      "he_so": 0.88,
+      "loai": "tuong_quan",
+      "chu_de": [
+        "hang_hoa",
+        "nang_luong"
+      ]
+    },
+    {
+      "tu": "OIL-WTI",
+      "den": "CPI_US",
+      "he_so": 0.6,
+      "loai": "nguyen_nhan",
+      "chu_de": [
+        "hang_hoa",
+        "lam_phat"
+      ]
+    },
+    {
+      "tu": "COPPER",
+      "den": "SPX",
+      "he_so": 0.65,
+      "loai": "tuong_quan",
+      "chu_de": [
+        "hang_hoa",
+        "tang_truong"
+      ]
+    },
+    {
+      "tu": "USDT_DOM",
+      "den": "BTC-USDT",
+      "he_so": -0.75,
+      "loai": "tuong_quan",
+      "chu_de": [
+        "crypto",
+        "tam_ly_thi_truong"
+      ]
+    },
+    {
+      "tu": "FUNDING",
+      "den": "BTC-USDT",
+      "he_so": 0.55,
+      "loai": "nguyen_nhan",
+      "chu_de": [
+        "crypto",
+        "derivatives"
+      ]
+    }
+  ],
+  "chu_de_mo_ta": {
+    "crypto": "Tai san tien ma hoa",
+    "risk-on": "Tai san tang khi thi truong risk appetite cao",
+    "usd": "Lien quan den suc manh dong USD",
+    "lam_phat": "Anh huong boi du lieu lam phat (CPI, PPI)",
+    "lai_suat": "Anh huong boi chinh sach lai suat (FED, ECB)",
+    "vi_mo": "Yeu to kinh te vi mo toan cau",
+    "co_phieu": "Thi truong co phieu",
+    "hang_hoa": "Hang hoa co ban (vang, dau, dong...)",
+    "viet_nam": "Thi truong Viet Nam",
+    "tam_ly_thi_truong": "Sentiment va cau truc thi truong",
+    "derivatives": "Thi truong phai sinh (futures, options)",
+    "tech": "Co phieu cong nghe",
+    "ngan_hang": "Co phieu ngan hang",
+    "bat_dong_san": "Co phieu bat dong san",
+    "layer1": "Blockchain layer 1",
+    "forex": "Thi truong ngoai hoi",
+    "tru_gia_tri": "Tai san luu tru gia tri (SoV)",
+    "tang_truong": "Chi bao tang truong kinh te",
+    "nang_luong": "Nang luong (dau, khi dot)",
+    "exchange_token": "Token san giao dich"
+  }
+}

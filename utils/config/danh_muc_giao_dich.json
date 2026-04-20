@@ -1,0 +1,34 @@
+{
+  "markets": {
+    "crypto": {
+      "active_exchanges": ["okx", "binance"],
+      "pairs": ["BTC-USDT", "ETH-USDT", "SOL-USDT"],
+      "timeframes": ["5m", "15m", "1H", "4H", "1D"],
+      "default_leverage": 3,
+      "fee_rate": 0.001
+    },
+    "vnstock": {
+      "active_brokers": ["VCI", "SSI"],
+      "symbols": ["FPT", "MWG", "TCB", "VCB"],
+      "timeframes": ["1D", "1W"],
+      "default_leverage": 1,
+      "fee_rate": 0.0015
+    },
+    "global_stocks": {
+      "active_sources": ["yfinance"],
+      "symbols": ["AAPL", "MSFT", "TSLA"],
+      "timeframes": ["1D"],
+      "default_leverage": 1,
+      "fee_rate": 0.0
+    }
+  },
+  "risk_management": {
+    "max_risk_per_trade_pct": 0.02,
+    "max_daily_drawdown_pct": 0.05,
+    "global_stop_loss_pct": 0.1
+  },
+  "a03_filter_settings": {
+    "strict_mode": true,
+    "block_on_volatile": true
+  }
+}
