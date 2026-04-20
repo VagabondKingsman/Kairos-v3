@@ -93,11 +93,11 @@ npm run dev
 
 ---
 
-## ⚖️ Giấy phép
-Dự án được phát hành dưới giấy phép [MIT License](LICENSE).
+## ⚖️ Giấy phép & Tác giả
+- **Tác giả:** Phùng Vinh (PVinh05-Quant)
 
 ---
 
 <div align="center">
-  Developed by <b>PVinh05-Quant</b>
+  Built with ❤️ by <b>Phùng Vinh</b>
 </div>
