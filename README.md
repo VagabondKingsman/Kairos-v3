@@ -44,7 +44,7 @@ KAIROS_QUANT_ENTERPRISE/
 │   ├── kho_dac_trung/          # (Feature Store)
 │   │   ├── offline/            # Phục vụ train AI
 │   │   └── online/             # Cache trên RAM phục vụ chạy Live
-│   │       └── memory_store.py # OnlineFeatureStore
+│   │      └── memory_store.py  # OnlineFeatureStore
 │   └── danh_muc/               # (Catalog) Lưu metadata của Data
 │
 # ==========================================
