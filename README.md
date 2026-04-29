@@ -1,5 +1,6 @@
 📂 KIẾN TRÚC HỆ THỐNG (DIRECTORY STRUCTURE)
 
+```text
 KAIROS_QUANT_ENTERPRISE/
 ├── .env                        # Chứa API Keys, Passwords (KHÔNG commit)
 ├── .gitignore
@@ -43,7 +44,7 @@ KAIROS_QUANT_ENTERPRISE/
 │   ├── kho_dac_trung/          # (Feature Store)
 │   │   ├── offline/            # Phục vụ train AI
 │   │   └── online/             # Cache trên RAM phục vụ chạy Live
-│   │      └── memory_store.py  # OnlineFeatureStore
+│   │       └── memory_store.py # OnlineFeatureStore
 │   └── danh_muc/               # (Catalog) Lưu metadata của Data
 │
 # ==========================================
@@ -219,12 +220,13 @@ KAIROS_QUANT_ENTERPRISE/
 # 🚀 10. KỊCH BẢN VẬN HÀNH (SCRIPTS)
 # ==========================================
 └── kich_ban/
-
+```
 
 🌊 LUỒNG DỮ LIỆU THỰC CHIẾN (EVENT-DRIVEN FLOW)
 
 Tuyệt đối không có "State" nằm rải rác. Mọi thứ xoay quanh Single Source of Truth và Event Bus.
 
+```mermaid
 graph TD
     %% Định nghĩa các node
     EX[Sàn Giao Dịch]
@@ -262,5 +264,4 @@ graph TD
     
     EX -- FillEvent_v1 --> BUS
     BUS -.-> |Ghi WAL -> Snapshot| SSOT
-
-
+```
