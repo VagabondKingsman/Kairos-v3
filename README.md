@@ -189,9 +189,9 @@ KAIROS_QUANT_ENTERPRISE/
 │   │       ├── drop_policy/            # Bỏ qua Tick data cũ nếu nghẽn
 │   │       └── priority_channel/       # Luôn ưu tiên Fill Event và Risk Alert
 │   │
-│   ├── bo_nho_chung/               # (Shared Memory)
-│   └── dong_ho_thoi_gian/          # (Clock)
-│       └── time_validator.py       # Xác thực đồng bộ thời gian hệ thống
+│   ├── bo_nho_chung/                   # (Shared Memory)
+│   └── dong_ho_thoi_gian/              # (Clock)
+│       └── time_validator.py           # Xác thực đồng bộ thời gian hệ thống
 │
 # ==========================================
 # 📊 9. GIÁM SÁT & KIỂM THỬ (MONITORING & TESTING)
