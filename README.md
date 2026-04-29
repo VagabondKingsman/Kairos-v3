@@ -230,7 +230,7 @@ Tuyệt đối không có "State" nằm rải rác. Mọi thứ xoay quanh Singl
 graph TD
     %% Định nghĩa các node
     EX[Sàn Giao Dịch]
-    MD[Động Cơ Dữ Liệu - Rust]
+    MD[Động Cơ Dữ Liệu]
     BUS((Event Bus ZMQ + Backpressure))
     SSOT[(State Store: Snapshot + WAL)]
     
