@@ -200,7 +200,7 @@ KAIROS v3/
 # ==========================================
 ├── giam_sat/
 │   ├── chi_so_hieu_suat/               # (Metrics) RAM, CPU
-│   ├── canh_bao/              # (Alerts)
+│   ├── canh_bao/                       # (Alerts)
 │   └── theo_doi_do_tre/                # Đo lường độ trễ toàn hệ thống
 │       ├── histogram.py                # Tính toán và phân bổ thống kê độ trễ
 │       ├── reporter.py                 # Xuất báo cáo và log
