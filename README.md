@@ -1,250 +1,30 @@
-📂 KIẾN TRÚC HỆ THỐNG (DIRECTORY STRUCTURE)
+# 🚀 Kairos Quant Enterprise v3
 
-```text
-KAIROS v3/
-├── .env                                # Chứa API Keys, Passwords (KHÔNG commit)
-├── .gitignore
-├── docker-compose.yml                  # Đóng gói hạ tầng (Redis, ZMQ, Grafana)
-├── Dockerfile
-├── Makefile                            # Phím tắt thao tác (make train, make live)
-├── pyproject.toml                      # Quản lý thư viện Python (Poetry/Ruff)
-├── README.md                           # Bạn đang đọc file này
-├── scratch_find_py.py                  # Script tiện ích tìm kiếm file Python
-│
-# ==========================================
-# ⚙️ 1. CẤU HÌNH & MÔI TRƯỜNG (CONFIG & RUNTIME)
-# ==========================================
-├── cau_hinh/
-│   ├── adapter_loader.py               # Tự động nạp Adapter cấu hình
-│   ├── chien_luoc.yaml                 # Trọng số phân bổ cho các Alpha
-│   ├── giam_sat/                       # (Configs cho các module Giám sát)
-│   │   ├── canh_bao.yaml
-│   │   └── chi_so_hieu_suat.yaml
-│   ├── ket_noi/                        # (Configs kết nối sàn)
-│   │   ├── exchanges.yaml
-│   │   └── symbol_master.yaml
-│   ├── ha_tang/                        # (Configs cho tầng Infrastructure)
-│   │   └── flow_config.yaml            # Cấu hình Backpressure & Quotas
-│   └── quan_tri_rui_ro/                # (Configs quản trị rủi ro)
-│       └── risk_config.yaml
-│
-├── moi_truong_chay/                    # (RUNTIME ISOLATION) Tách biệt tuyệt đối
-│   ├── live/                           # Chạy tiền thật (Event bus & DB riêng biệt)
-│   ├── paper/                          # Chạy tiền ảo (Testnet)
-│   │   ├── audit_to_parquet.py         # Chuyển đổi dữ liệu kiểm toán sang Parquet
-│   │   ├── microstructure_model.py     # Mô phỏng vi cấu trúc thị trường
-│   │   ├── paper_ems_adapter.py        # Adapter thực thi cho Paper Trading
-│   │   ├── paper_runner.py             # Script chạy chính cho môi trường Paper
-│   │   ├── paper_state_manager.py      # Quản lý trạng thái lệnh ảo
-│   │   └── shock_simulator.py          # Giả lập các cú sốc thị trường
-│   ├── backtest/                       # Chạy giả lập quá khứ
-│   └── upstream_runner.py              # Script khởi chạy các tiến trình Data/Risk
-│
-# ==========================================
-# 🗄️ 2. HỒ DỮ LIỆU (DATA LAKE - PARTITIONED)
-# ==========================================
-├── ho_du_lieu/
-│   ├── tho/                            # (Raw) Dữ liệu gốc bất biến
-│   │   ├── lich_su_khop_lenh/          # (Trades) symbol=BTCUSDT/date=2024-01-01/part-000.parquet
-│   │   ├── so_lenh_l2/                 # (Orderbook L2) Phân mảnh theo ngày/cặp coin
-│   │   └── funding_liquid/             # (Funding rates & Thanh lý)
-│   │
-│   ├── da_xu_ly/                       # Dữ liệu đã làm sạch & đồng bộ
-│   ├── kho_dac_trung/                  # (Feature Store)
-│   │   ├── offline/                    # Phục vụ train AI
-│   │   └── online/                     # Cache trên RAM phục vụ chạy Live
-│   │      └── memory_store.py          # OnlineFeatureStore
-│   └── danh_muc/                       # (Catalog) Lưu metadata của Data
-│
-# ==========================================
-# ⚡ 3. ĐỘNG CƠ DỮ LIỆU (DATA ENGINE)
-# ==========================================
-├── dong_co_du_lieu/
-│   ├── thu_thap/                       # (Collector)
-│   │   ├── websocket/                  # Real-time streaming — push từ sàn
-│   │   │   ├── binance_ws.py           # BinanceGateway
-│   │   │   ├── okx_ws.py               # OkxGateway
-│   │   │   └── bybit_ws.py             # BybitGateway
-│   │   └── rest_api/                   # Polling định kỳ — pull từ sàn
-│   │       ├── __init__.py             # Re-export toàn bộ poller + RestDataEvent
-│   │       ├── base_rest.py            # BaseRestPoller
-│   │       ├── binance_rest.py         # BinanceRestPoller: OI(5m)/FR(1h)/L/S(5m)/klines(1m)
-│   │       ├── okx_rest.py             # OkxRestPoller: OI/FR/L/S/klines — BTC-USDT-SWAP
-│   │       ├── bybit_rest.py           # BybitRestPoller: OI/FR/L/S/klines — retCode=0
-│   │       └── onchain_rest.py         # CryptoQuantPoller: BTC/ETH reserve+netflow,
-│   │
-│   ├── xu_ly_dong/                     # (Stream Processor) Xử lý data realtime
-│   │   └── bo_loc/
-│   │       ├── orderbook_engine.py     # BaseOrderBookEngine + Binance/OKX/Bybit engine L2 sync
-│   │       └── ohlc_engine.py          # OHLCVAggregator + OHLCVEngine (Corrected name)
-│   │
-│   ├── xu_ly_lo/                       # (Batch Processor) Xử lý data lịch sử
-│   └── ong_dan_dac_trung/              # (Alpha Factory) Ultra-HFT feature pipeline <10µs/tick
-│       └── online/
-│           ├── feature_registry.py     # FEATURE_REGISTRY
-│           └── incremental_engine.py   # IncrementalFeatureEngine
-│
-# ==========================================
-# 🧪 4. PHÒNG NGHIÊN CỨU & KIỂM THỬ (RESEARCH & REPLAY)
-# ==========================================
-├── nghien_cuu/
-│   ├── so_tay_jupyter/                 # (Notebooks) Nơi vọc vạch data
-│   ├── nha_may_alpha/                  # (Alpha Factory) Kho chứa các ý tưởng giao dịch
-│   ├── dong_co_phat_lai/               # (REPLAY ENGINE) Cực kỳ quan trọng
-│   │
-│   ├── kiem_thu_qua_khu/               # (Backtest Engine)
-│   │   ├── ma_tran_sie_toc/            # (Vectorized) Dùng Polars
-│   │   └── mo_phong_su_kien/           # (Event-driven) Tính toán trượt giá chuẩn xác
-│   └── danh_gia/                       # (Evaluation) Sharpe ratio, Maximum Drawdown...
-│
-# ==========================================
-# 🤖 5. TRÍ TUỆ NHÂN TẠO & MLOps (MACHINE LEARNING)
-# ==========================================
-├── hoc_may/
-│   ├── mo_hinh/                        # (Models) PyTorch LSTMs, Transformers
-│   ├── huan_luyen/                     # Script train model
-│   ├── suy_luan/                       # Logic Inference tối ưu bằng ONNX/TensorRT
-│   ├── to_hop_alpha/                   # (Alpha Combiner) Hợp nhất các tín hiệu lại
-│   └── giam_sat_mo_hinh/               # (ML MONITORING)
-│       ├── sai_lech_dac_trung/         # (Feature Drift) Cảnh báo nếu bối cảnh market đổi
-│       └── sai_lech_du_doan/           # (Prediction Drift) 
-│
-# ==========================================
-# ⚔️ 6. THỰC THI CHIẾN DỊCH (EXECUTION CORE)
-# ==========================================
-├── thuc_thi_lenh/
-│   ├── bo_nho_trang_thai/              # [SINGLE SOURCE OF TRUTH] Nguồn sự thật duy nhất
-│   │   ├── snapshot/                   # Dump state định kỳ mỗi 5s (Load nhanh)
-│   │   ├── nhat_ky_wal/                # Write-Ahead Log (Bảo vệ tick cuối cùng)
-│   │   │   └── durable_wal.py          # Ghi log bền vững để chống mất data
-│   │   ├── vi_the/                     # (Positions)
-│   │   ├── so_lenh/                    # (Orders)
-│   │   ├── so_du/                      # (Balances)
-│   │   └── state_manager.py            # Quản lý trạng thái hệ thống
-│   │
-│   ├── cong_ket_noi/                   # (Gateway) Wrapper chuẩn hóa Binance/Bybit/OKX
-│   │   ├── base_adapter.py             # Lớp cơ sở cho các Adapter sàn
-│   │   ├── binance_adapter.py          # Adapter cho Binance
-│   │   ├── bybit_adapter.py            # Adapter cho Bybit
-│   │   ├── okx_adapter.py              # Adapter cho OKX
-│   │   └── chien_luoc_thu_lai/         # (RETRY POLICY) Rate Limit + Circuit Breaker
-│   │
-│   ├── dong_co_tin_hieu/               # (Signal Engine) Lắng nghe ML sinh tín hiệu
-│   │   ├── models/                     # Mô hình ml
-│   │   ├── ml_signal_engine.py         # Động cơ tín hiệu dựa trên Machine Learning
-│   │   └── mock_onnx_generator.py      # Giả lập tín hiệu ONNX phục vụ kiểm thử
-│   │
-│   ├── quan_ly_danh_muc/               # (Portfolio Engine) Quyết định Size
-│   │   └── ke_toan_pnl/                # (ACCOUNTING) Chuẩn kế toán quỹ
-│   │       ├── realized_pnl/           # Chốt lời/lỗ thực
-│   │       ├── unrealized_pnl/         # Lời/lỗ chưa chốt
-│   │       └── phi_va_funding/         # Phí giao dịch & Funding Rate
-│   │
-│   ├── danh_ba_chien_luoc/             # (STRATEGY REGISTRY) Quản lý đa chiến lược
-│   │   ├── chien_luoc_active/          # Các chiến lược đang chạy live
-│   │   └── trong_so_phan_bo/           # Phân bổ vốn cho từng chiến lược
-│   │
-│   ├── quan_ly_lenh/                   # (OMS) Kế toán ghi chép Lệnh Mẹ
-│   ├── dong_co_thuc_thi/               # (EMS) Lính bắn tỉa xé lệnh (Smart Router, TWAP)
-│   │   ├── ems.py                      # Động cơ thực thi lệnh chính
-│   │   └── execution_risk_engine.py    # Kiểm soát rủi ro trong quá trình thực thi
-│   │
-│   ├── theo_doi_do_tre/                # (LATENCY TRACKER) Bắt buộc phải đo
-│   │   ├── tick_den_tin_hieu/          # Tick -> Signal: ? µs
-│   │   ├── tin_hieu_den_lenh/          # Signal -> Order: ? µs
-│   │   └── lenh_den_khop/              # Order -> Fill: ? ms
-│   │
-│   └── vong_lap_su_kien.py             # (Event Loop) Trái tim duy trì nhịp đập Live
-│
-# ==========================================
-# 🚨 7. LƯỚI BẢO VỆ (RISK SYSTEM)
-# ==========================================
-├── quan_tri_rui_ro/
-│   ├── rui_ro_cheo_chien_luoc/         # (CROSS-STRATEGY RISK)
-│   │   ├── bu_tru_vi_the/              # (Exposure Netting) Tránh nội bộ đánh nhau (Long vs Short)
-│   │   └── xung_dot_tin_hieu/          # (Conflict Detector)
-│   │
-│   ├── kiem_tra_truoc_lenh/            # (Pre-trade Risk) Chặn lệnh Fat-finger
-│   │   ├── rules/                      # Tập hợp các bộ quy tắc rủi ro
-│   │   │   ├── base_rule.py            # Giao diện cơ sở cho Rule rủi ro
-│   │   │   ├── global_rules.py         # Quy tắc rủi ro toàn cục
-│   │   │   ├── position_rules.py       # Quy tắc giới hạn vị thế
-│   │   │   └── rate_rules.py           # Quy tắc giới hạn tần suất lệnh
-│   │   ├── reconciliation.py           # Đối soát trạng thái
-│   │   ├── risk_codes.py               # Mã lỗi quản trị rủi ro
-│   │   └── risk_gate.py                # Cổng kiểm soát rủi ro chính
-│   └── nguoi_gac_cong/                 # (Watchdog) Tiến trình độc lập gỡ chốt tự hủy (Kill Switch)
-│       └── watchdog/
-│           ├── watchdog.py             # Logic giám sát và kích hoạt Kill Switch
-│           └── adapters/
-│               ├── lite_rest.py        # Kết nối REST nhẹ để kiểm tra trạng thái
-│               └── war_grade_rest.py   # Kết nối REST cấp độ cao cho tình huống khẩn cấp
-│
-# ==========================================
-# 🔗 8. HẠ TẦNG & GIAO TIẾP (INFRASTRUCTURE)
-# ==========================================
-├── ha_tang/
-│   ├── bus_su_kien/                    # (Event Bus) Pub/Sub bằng ZeroMQ
-│   │   ├── zmq_bus.py                  # AsyncEventBus: PUB/SUB multi-part, orjson, HWM backpressure
-│   │   ├── luoc_do_du_lieu/            # (EVENT SCHEMA VERSIONING) v1/, v2/
-│   │   │   └── v1/
-│   │   │       ├── base_event.py       # BaseEvent: frozen, UUID event_id, timestamp_ns (ns)
-│   │   │       ├── market_schema.py    # BaseEvent
-│   │   │       ├── state_schema.py     # BalanceModel, PositionModel
-│   │   │       ├── feature_schema.py   # FeatureEvent_v1
-│   │   │       ├── execution_schema.py # Schema cho Execution Events
-│   │   │       └── signal_schema.py    # Schema cho Signal Events
-│   │   └── kiem_soat_luu_luong/        # (BACKPRESSURE CONTROL) Tránh quá tải RAM
-│   │       ├── drop_policy/            # Bỏ qua Tick data cũ nếu nghẽn
-│   │       │   └── shedder.py          # O(1) Head Drop & Hysteresis Pressure Engine
-│   │       └── priority_channel/       # Luôn ưu tiên Fill Event và Risk Alert
-│   │           └── channel_manager.py  # SPSC Multi-Queue & Hard Fairness Drain
-│   │
-│   ├── bo_nho_chung/                   # (Shared Memory)
-│   └── dong_ho_thoi_gian/              # (Clock)
-│       └── time_validator.py           # Xác thực đồng bộ thời gian hệ thống
-│
-# ==========================================
-# 📊 9. GIÁM SÁT & KIỂM THỬ (MONITORING & TESTING)
-# ==========================================
-├── giam_sat/
-│   ├── chi_so_hieu_suat/               # (Metrics) Đo lường RAM, CPU, Context Switches
-│   │   ├── collector.py                # Thu thập thông số (psutil)
-│   │   └── reporter.py                 # Xuất dữ liệu Metrics qua ZMQ
-│   ├── canh_bao/                       # (Alerts) Hệ thống cảnh báo tự động
-│   │   ├── alert_manager.py            # Orchestrator quản lý Alert và Deduplication
-│   │   ├── alert_rules.py              # Rule Engine đánh giá cảnh báo
-│   │   └── telegram_sender.py          # Gửi tin nhắn qua Telegram
-│   └── theo_doi_do_tre/                # Đo lường độ trễ toàn hệ thống
-│       ├── histogram.py                # Tính toán và phân bổ thống kê độ trễ
-│       ├── reporter.py                 # Xuất báo cáo và log
-│       └── tracker.py                  # Đo lường thời gian xử lý từng bước
-├── kiem_thu/
-│   └── san_gia_lap/                    # (Mock Exchange) Khớp lệnh ảo
-│
-├── test/                               # (Unit & Integration Tests)
-│   ├── test_chaos_risk.py              # Kiểm thử rủi ro hỗn loạn
-│   ├── test_execution_pipeline.py      # Kiểm thử pipeline thực thi lệnh
-│   ├── test_feature_layer.py           # Kiểm thử lớp tính năng
-│   ├── test_rest_api.py                # Kiểm thử API REST
-│   ├── test_signal_engine.py           # Kiểm thử engine tín hiệu
-│   ├── test_profiler.py                # Đo hiệu năng hệ thống
-│   ├── test_state.py                   # Kiểm thử quản lý trạng thái
-│   ├── test_ws_gateway_fixes.py        # Kiểm thử bản vá WebSocket
-│   ├── xem_du_lieu_binance.py          
-│   ├── xem_du_lieu_bybit.py
-│   ├── xem_du_lieu_okx.py
-│   └── xem_du_lieu_tho.py
-│
-# ==========================================
-# 🚀 10. KỊCH BẢN VẬN HÀNH (SCRIPTS)
-# ==========================================
-└── kich_ban/
-```
+> Hệ thống giao dịch định lượng (Quant Trading) tự động hóa toàn diện, với kiến trúc độ trễ cực thấp (Ultra-Low Latency) lấy cảm hứng từ các tiêu chuẩn HFT (HFT-Inspired).
 
-🌊 LUỒNG DỮ LIỆU THỰC CHIẾN (EVENT-DRIVEN FLOW)
+---
 
-Tuyệt đối không có "State" nằm rải rác. Mọi thứ xoay quanh Single Source of Truth và Event Bus.
+## 📑 Mục Lục
+
+- [1. 🌊 Luồng Dữ Liệu Thực Chiến (Data Flow)](#1--luồng-dữ-liệu-thực-chiến-data-flow)
+- [2. 📂 Kiến Trúc Hệ Thống (Directory Map)](#2--kiến-trúc-hệ-thống-directory-map)
+- [3. 🧩 Phân Tích Chuyên Sâu Từng Module (Deep-Dive)](#3--phân-tích-chuyên-sâu-từng-module-deep-dive)
+  - [3.1. Cấu Hình & Môi Trường](#31--cấu-hình--môi-trường-config--runtime)
+  - [3.2. Hồ Dữ Liệu](#32-️-hồ-dữ-liệu-data-lake)
+  - [3.3. Động Cơ Dữ Liệu](#33--động-cơ-dữ-liệu-data-engine)
+  - [3.4. Phòng Nghiên Cứu](#34--phòng-nghiên-cứu--kiểm-thử-research--replay-wip)
+  - [3.5. Trí Tuệ Nhân Tạo](#35--trí-tuệ-nhân-tạo--mlops-machine-learning-wip)
+  - [3.6. Thực Thi Chiến Dịch](#36-️-thực-thi-chiến-dịch-execution-core)
+  - [3.7. Lưới Bảo Vệ](#37--lưới-bảo-vệ-risk-system)
+  - [3.8. Hạ Tầng & Giao Tiếp](#38--hạ-tầng--giao-tiếp-infrastructure)
+  - [3.9. Giám Sát & Kiểm Thử](#39--giám-sát--kiểm-thử-monitoring--testing)
+- [4. 💎 Điểm Nhấn Kỹ Thuật (HFT-Inspired Engineering Highlights)](#4--điểm-nhấn-kỹ-thuật-hft-inspired-engineering-highlights)
+
+---
+
+## 1. 🌊 Luồng Dữ Liệu Thực Chiến (Data Flow)
+
+Tuyệt đối không có "State" nằm rải rác. Mọi thứ xoay quanh **Single Source of Truth** và **Event Bus**.
 
 ```mermaid
 graph TD
@@ -285,3 +65,1260 @@ graph TD
     EX -- FillEvent_v1 --> BUS
     BUS -.-> |Ghi WAL -> Snapshot| SSOT
 ```
+
+---
+
+## 2. 📂 Kiến Trúc Hệ Thống (Directory Map)
+
+```text
+KAIROS v3/
+├── .env                                # Chứa API Keys, Passwords (KHÔNG commit)
+├── .gitignore
+├── docker-compose.yml                  # Đóng gói hạ tầng (Redis, ZMQ, Grafana)
+├── Dockerfile
+├── Makefile                            # Phím tắt thao tác (make train, make live)
+├── pyproject.toml                      # Quản lý thư viện Python (Poetry/Ruff)
+├── README.md                           # Bạn đang đọc file này
+│
+# ==========================================
+# ⚙️ 1. CẤU HÌNH & MÔI TRƯỜNG (CONFIG & RUNTIME)
+# ==========================================
+├── cau_hinh/
+│   ├── adapter_loader.py               # Tự động nạp Adapter cấu hình
+│   ├── chien_luoc.yaml                 # Trọng số phân bổ cho các Alpha
+│   ├── giam_sat/                       # (Configs cho các module Giám sát)
+│   │   ├── canh_bao.yaml
+│   │   └── chi_so_hieu_suat.yaml
+│   ├── ket_noi/                        # (Configs kết nối sàn)
+│   │   ├── exchanges.yaml
+│   │   └── symbol_master.yaml
+│   ├── ha_tang/                        # (Configs cho tầng Infrastructure)
+│   │   └── flow_config.yaml            # Cấu hình Backpressure & Quotas
+│   └── quan_tri_rui_ro/                # (Configs quản trị rủi ro)
+│       └── risk_config.yaml
+│
+├── moi_truong_chay/                    # (RUNTIME ISOLATION) Tách biệt tuyệt đối
+│   ├── live/                           # Chạy tiền thật
+│   ├── paper/                          # Chạy tiền ảo (Testnet)
+│   │   ├── audit_to_parquet.py         # Chuyển đổi dữ liệu kiểm toán sang Parquet
+│   │   ├── microstructure_model.py     # Mô phỏng vi cấu trúc thị trường
+│   │   ├── paper_ems_adapter.py        # Adapter thực thi cho Paper Trading
+│   │   ├── paper_runner.py             # Script chạy chính cho môi trường Paper
+│   │   ├── paper_state_manager.py      # Quản lý trạng thái lệnh ảo
+│   │   └── shock_simulator.py          # Giả lập các cú sốc thị trường
+│   ├── backtest/                       # Chạy giả lập quá khứ
+│   └── upstream_runner.py              # Script khởi chạy các tiến trình Data/Risk
+│
+# ==========================================
+# 🗄️ 2. HỒ DỮ LIỆU (DATA LAKE)
+# ==========================================
+├── ho_du_lieu/
+│   ├── tho/                            # (Raw) Dữ liệu gốc bất biến
+│   │   ├── lich_su_khop_lenh/          # (Trades) symbol=BTCUSDT/date=2024-01-01/...
+│   │   ├── so_lenh_l2/                 # (Orderbook L2) Phân mảnh theo ngày/cặp coin
+│   │   └── funding_liquid/             # (Funding rates & Thanh lý)
+│   ├── da_xu_ly/                       # Dữ liệu đã làm sạch & đồng bộ
+│   ├── kho_dac_trung/                  # (Feature Store)
+│   │   ├── offline/                    # Phục vụ train AI
+│   │   └── online/                     # Cache trên RAM phục vụ chạy Live
+│   │      └── memory_store.py          # OnlineFeatureStore
+│   └── danh_muc/                       # (Catalog) Lưu metadata
+│
+# ==========================================
+# ⚡ 3. ĐỘNG CƠ DỮ LIỆU (DATA ENGINE)
+# ==========================================
+├── dong_co_du_lieu/
+│   ├── thu_thap/                       # (Collector)
+│   │   ├── websocket/                  # Real-time streaming
+│   │   │   ├── binance_ws.py           # BinanceGateway
+│   │   │   ├── okx_ws.py              # OkxGateway
+│   │   │   └── bybit_ws.py             # BybitGateway
+│   │   └── rest_api/                   # Polling định kỳ
+│   │       ├── base_rest.py            # BaseRestPoller
+│   │       ├── binance_rest.py         # BinanceRestPoller
+│   │       ├── okx_rest.py             # OkxRestPoller
+│   │       ├── bybit_rest.py           # BybitRestPoller
+│   │       └── onchain_rest.py         # CryptoQuantPoller
+│   ├── xu_ly_dong/                     # (Stream Processor)
+│   │   └── bo_loc/
+│   │       ├── orderbook_engine.py     # L2 Sync Engine
+│   │       └── ohlc_engine.py          # OHLCV Aggregator
+│   ├── xu_ly_lo/                       # (Batch Processor)
+│   └── ong_dan_dac_trung/              # (Feature Pipeline) <10µs/tick
+│       └── online/
+│           ├── feature_registry.py     # FEATURE_REGISTRY + CompiledPlan
+│           └── incremental_engine.py   # IncrementalFeatureEngine
+│
+# ==========================================
+# 🧪 4. PHÒNG NGHIÊN CỨU (RESEARCH & REPLAY)
+# ==========================================
+├── nghien_cuu/
+│   ├── so_tay_jupyter/                 # (Notebooks)
+│   ├── nha_may_alpha/                  # (Alpha Factory)
+│   ├── dong_co_phat_lai/               # (REPLAY ENGINE)
+│   ├── kiem_thu_qua_khu/               # (Backtest Engine)
+│   │   ├── ma_tran_sie_toc/            # (Vectorized) Polars
+│   │   └── mo_phong_su_kien/           # (Event-driven)
+│   └── danh_gia/                       # (Evaluation) Sharpe, MDD
+│
+# ==========================================
+# 🤖 5. TRÍ TUỆ NHÂN TẠO (MACHINE LEARNING)
+# ==========================================
+├── hoc_may/
+│   ├── mo_hinh/                        # (Models) LSTM, Transformer
+│   ├── huan_luyen/                     # Script train model
+│   ├── suy_luan/                       # ONNX/TensorRT Inference
+│   ├── to_hop_alpha/                   # (Alpha Combiner)
+│   └── giam_sat_mo_hinh/               # (ML MONITORING)
+│       ├── sai_lech_dac_trung/         # Feature Drift
+│       └── sai_lech_du_doan/           # Prediction Drift
+│
+# ==========================================
+# ⚔️ 6. THỰC THI CHIẾN DỊCH (EXECUTION CORE)
+# ==========================================
+├── thuc_thi_lenh/
+│   ├── bo_nho_trang_thai/              # [SINGLE SOURCE OF TRUTH]
+│   │   ├── snapshot/                   # Dump state định kỳ mỗi 5s
+│   │   ├── nhat_ky_wal/                # Write-Ahead Log
+│   │   │   └── durable_wal.py          # War-Grade WAL (mmap + CRC32)
+│   │   ├── vi_the/                     # (Positions)
+│   │   ├── so_lenh/                    # (Orders)
+│   │   ├── so_du/                      # (Balances)
+│   │   └── state_manager.py            # Quản lý trạng thái hệ thống
+│   ├── cong_ket_noi/                   # (Gateway) Binance/Bybit/OKX
+│   │   ├── base_adapter.py
+│   │   ├── binance_adapter.py
+│   │   ├── bybit_adapter.py
+│   │   ├── okx_adapter.py
+│   │   └── chien_luoc_thu_lai/         # Rate Limit + Circuit Breaker
+│   ├── dong_co_tin_hieu/               # (Signal Engine)
+│   │   ├── ml_signal_engine.py
+│   │   └── mock_onnx_generator.py
+│   ├── quan_ly_danh_muc/               # (Portfolio Engine)
+│   │   └── ke_toan_pnl/               # Accounting: Realized/Unrealized PnL
+│   ├── danh_ba_chien_luoc/             # (STRATEGY REGISTRY)
+│   ├── quan_ly_lenh/                   # (OMS) Order Management
+│   ├── dong_co_thuc_thi/               # (EMS) Execution Management
+│   │   ├── ems.py
+│   │   └── execution_risk_engine.py
+│   ├── theo_doi_do_tre/                # (LATENCY TRACKER)
+│   └── vong_lap_su_kien.py             # (Event Loop) — 828 dòng, trái tim hệ thống
+│
+# ==========================================
+# 🚨 7. LƯỚI BẢO VỆ (RISK SYSTEM)
+# ==========================================
+├── quan_tri_rui_ro/
+│   ├── rui_ro_cheo_chien_luoc/         # Cross-Strategy Risk
+│   │   ├── bu_tru_vi_the/              # Exposure Netting
+│   │   └── xung_dot_tin_hieu/          # Conflict Detector
+│   ├── kiem_tra_truoc_lenh/            # Pre-trade Risk (605 dòng)
+│   │   ├── rules/
+│   │   │   ├── base_rule.py
+│   │   │   ├── global_rules.py         # MaxDailyLoss, MaxDrawdown
+│   │   │   ├── position_rules.py       # MaxOpenOrders, Concentration
+│   │   │   └── rate_rules.py           # OrderRate, DuplicateGuard
+│   │   ├── reconciliation.py
+│   │   ├── risk_codes.py
+│   │   └── risk_gate.py                # Cổng kiểm soát rủi ro chính
+│   └── nguoi_gac_cong/                 # (Watchdog) Kill Switch
+│       └── watchdog/
+│           ├── watchdog.py
+│           └── adapters/
+│               ├── lite_rest.py
+│               └── war_grade_rest.py
+│
+# ==========================================
+# 🔗 8. HẠ TẦNG (INFRASTRUCTURE)
+# ==========================================
+├── ha_tang/
+│   ├── bus_su_kien/                    # (Event Bus) ZeroMQ
+│   │   ├── zmq_bus.py                  # AsyncEventBus PUB/SUB
+│   │   ├── luoc_do_du_lieu/v1/         # Event Schema Versioning
+│   │   │   ├── base_event.py
+│   │   │   ├── market_schema.py
+│   │   │   ├── state_schema.py
+│   │   │   ├── feature_schema.py       # _FeatureEventRaw (192B ctypes)
+│   │   │   ├── execution_schema.py
+│   │   │   └── signal_schema.py        # _SignalEventRaw (64B ctypes)
+│   │   └── kiem_soat_luu_luong/        # Backpressure Control
+│   │       ├── drop_policy/
+│   │       │   └── shedder.py          # Adaptive Shedder (EWMA)
+│   │       └── priority_channel/
+│   │           └── channel_manager.py  # SPSC Multi-Queue
+│   ├── bo_nho_chung/                   # (Shared Memory)
+│   └── dong_ho_thoi_gian/
+│       └── time_validator.py           # PTP/NTP Clock Validation
+│
+# ==========================================
+# 📊 9. GIÁM SÁT (MONITORING & TESTING)
+# ==========================================
+├── giam_sat/
+│   ├── chi_so_hieu_suat/               # System Metrics
+│   │   ├── collector.py                # Dedicated OS Thread collector
+│   │   └── reporter.py                 # ZMQ reporter
+│   ├── canh_bao/                       # Alerts
+│   │   ├── alert_manager.py
+│   │   ├── alert_rules.py
+│   │   └── telegram_sender.py
+│   └── theo_doi_do_tre/                # Latency Tracking
+│       ├── histogram.py                # HdrHistogram zero-alloc
+│       ├── reporter.py
+│       └── tracker.py                  # 4-segment latency tracker
+├── kiem_thu/
+│   └── san_gia_lap/                    # Mock Exchange
+├── test/                               # Unit & Integration Tests
+│   ├── test_chaos_risk.py
+│   ├── test_execution_pipeline.py
+│   ├── test_feature_layer.py
+│   ├── test_rest_api.py
+│   ├── test_signal_engine.py
+│   ├── test_profiler.py
+│   ├── test_state.py
+│   └── test_ws_gateway_fixes.py
+│
+# ==========================================
+# 🚀 10. KỊCH BẢN VẬN HÀNH (SCRIPTS)
+# ==========================================
+└── kich_ban/
+```
+
+---
+
+## 3. 🧩 Phân Tích Chuyên Sâu Từng Module (Deep-Dive)
+
+Dưới đây là mổ xẻ mã nguồn thực tế của từng phân hệ. Mục tiêu của Kairos là ép độ trễ về giới hạn vật lý của Python bằng cách loại bỏ Garbage Collection trên hot-path, sử dụng `ctypes` thay cho Python objects, và áp dụng kiến trúc Lock-free Multi-threading.
+
+---
+
+### 3.1. ⚙️ Cấu Hình & Môi Trường (Config & Runtime)
+
+Module điều phối cấp cao nhất, kết hợp giữa quản lý tham số tĩnh và kiến trúc giả lập Paper Trading.
+
+#### Cấu hình tĩnh (`cau_hinh/`)
+
+Tách bạch hoàn toàn logic và tham số. Không hardcode bất kỳ giá trị nào trong source code:
+
+* `flow_config.yaml` — Định nghĩa giới hạn phần cứng cho hệ thống Backpressure: CRITICAL queue max `100k` items, budget drain cycle `200µs`, hệ số làm mượt EWMA cho Adaptive Shedder.
+* `symbol_master.yaml` — Ánh xạ cặp tiền thành số nguyên (`symbol_id`) để truy xuất mảng O(1) trong hot-path. Định nghĩa `tick_size`, `lot_size`, `qty_step` tối ưu cho từng cặp coin.
+* `risk_config.yaml` — Quản lý rate-limit API (Token Bucket), Circuit Breaker (ngắt mạch khi chạm Max Drawdown), `max_daily_loss_usdt`, `max_drawdown_pct`, `duplicate_cooldown_ms`.
+* `exchanges.yaml` — Endpoint REST/WS cho Binance, OKX, Bybit. Tích hợp fallback tự động.
+* `adapter_loader.py` — Factory tự động nạp cấu hình kết hợp biến môi trường `.env`:
+
+```python
+# cau_hinh/adapter_loader.py
+def build_adapters(env_path, exchanges_yaml, active_exchanges):
+    """Tự động khởi tạo Exchange Adapters từ config files."""
+    active = list({cfg.exchange for cfg in configs.values()})
+    adapters = build_adapters(env_path, exchanges_yaml, active_exchanges=active)
+```
+
+#### Môi trường Paper Trading (`moi_truong_chay/paper/`)
+
+Không dùng "mock" đơn giản. Đây là một sàn giao dịch nội bộ mô phỏng vi cấu trúc thị trường (Market Microstructure) với **Pipeline Khớp Lệnh 19 Bước**:
+
+* **Crash-safe & Deterministic**: Mọi lệnh được gán `SHA256-seeded RNG` để tái tạo hoàn hảo trạng thái. Ghi nhận state vào bộ nhớ (WAL-like) trước khi sinh log.
+* **Latency Jitter**: Phân phối Lognormal đuôi dài (heavy-tail) mô phỏng network jitter thực tế. Không khớp lệnh "ngay lập tức" như các thư viện thông thường.
+* **Nhiễu loạn Orderbook (Spoofing)**: Tự động bào mòn sổ lệnh, mô phỏng ảo ảnh thanh khoản (Liquidity Mirage) và lệnh tảng băng (Iceberg).
+* **Trượt giá (Kyle's Alpha)**: Ứng dụng mô hình Kyle's Alpha tính toán self-impact. Tự động sinh tỷ lệ độc hại (Toxicity / Adverse Selection) liên tục.
+* `microstructure_model.py` — Process nền nghe ZMQ để bám sát Volatility, Order Flow Imbalance, và tính toán hệ số lây lan rủi ro chéo (Contagion: BTC sập → ALT đổ) trong cửa sổ 500ms.
+* `shock_simulator.py` — Giả lập các cú sốc đột ngột (Flash Crash, Liquidation Cascade) để stress-test thuật toán quản lý rủi ro.
+
+---
+
+### 3.2. 🗄️ Hồ Dữ Liệu (Data Lake)
+
+Kiến trúc Cold-Storage, tối ưu cho Backtest Vectorized hàng tỷ rows.
+
+#### Dữ liệu thô (`ho_du_lieu/tho/`)
+
+Không bao giờ chỉnh sửa (Immutable). Lưu dưới định dạng Parquet nén siêu tốc theo chuẩn **Hive Partitioning** (`symbol=BTCUSDT/date=2024-01-01/part-000.parquet`):
+
+* `lich_su_khop_lenh/` — Raw tick data (trades): price, qty, timestamp, is_buyer_maker.
+* `so_lenh_l2/` — Orderbook L2 snapshots: top 20 bids/asks, phân mảnh theo ngày.
+* `funding_liquid/` — Funding rates & Liquidation events.
+
+#### Kho Đặc Trưng Online (`ho_du_lieu/kho_dac_trung/online/memory_store.py`)
+
+File **337 dòng**, là bộ nhớ cache siêu tốc trên RAM phục vụ inference live. Thiết kế đạt chuẩn **Zero-allocation trên hot-path**:
+
+```python
+# ho_du_lieu/kho_dac_trung/online/memory_store.py
+class OnlineFeatureStore:
+    """Pre-allocated, cache-line-aligned feature store for MAX_SYMBOLS symbols."""
+
+    def __init__(self, max_symbols: int = 256) -> None:
+        # ── Main store: NumPy structured array, 192 bytes/symbol ──
+        self._store = np.zeros(max_symbols, dtype=FEATURE_EVENT_DTYPE)
+
+        # ── Pre-compute destination pointers (startup cost, zero hot-path alloc) ──
+        self._feat_ptrs: list[int] = [
+            int(self._feat_col[i].ctypes.data) for i in range(max_symbols)
+        ]
+```
+
+**Thiết kế chống False-sharing**: `FEATURE_EVENT_DTYPE.itemsize == 192 bytes` (vừa khít 3 cache lines 64B). Symbols ở index `i` và `i+1` bắt đầu ở offset `192*i` và `192*(i+1)` — header 64B đầu tiên không bao giờ trùng cache line.
+
+**Reorder Buffer (ROB)**: Trong thị trường crypto, do độ trễ mạng, các luồng WebSocket thường gửi gói tin bị lộn xộn thứ tự (out-of-order). Tính toán OFI hoặc EMA dựa trên dữ liệu lộn xộn sẽ cho kết quả sai. ROB là một "phòng chờ" chứa các tick đến sớm trong cửa sổ 5ms. Khi đến hạn, hệ thống dọn dẹp bằng thuật toán **In-place Insertion Sort** siêu nhẹ, vì mảng thường chỉ có 1-3 phần tử bị lộn xộn:
+
+```python
+# In-place insertion sort — n ≤ 64, thường chỉ 1-3 phần tử
+for i in range(1, n):
+    key_ts   = int(buf[i, 0])
+    key_slot = int(buf[i, 1])
+    j = i - 1
+    while j >= 0 and int(buf[j, 0]) > key_ts:
+        buf[j + 1, 0] = buf[j, 0]
+        buf[j + 1, 1] = buf[j, 1]
+        j -= 1
+    buf[j + 1, 0] = key_ts
+    buf[j + 1, 1] = key_slot
+```
+
+**Zero-Allocation Write** — `_write_to_store()` ghi trực tiếp vào NumPy structured array mà không tạo bất kỳ Python object nào:
+
+```python
+# memory_store.py — _write_to_store()
+def _write_to_store(self, idx, raw, effective_mask):
+    """Zero-allocation write to main store."""
+    s = self._store   # single attribute lookup, not a copy
+    # Column-first access: ghi trực tiếp vào mảng int64/uint64
+    # KHÔNG tạo numpy.void intermediate object
+    s["exchange_ts"][idx]            = raw.exchange_ts
+    s["receive_ts"][idx]             = raw.receive_ts
+    s["processed_ts"][idx]           = raw.processed_ts
+    s["source_latency_ns"][idx]      = raw.source_latency_ns
+    s["computation_latency_ns"][idx] = raw.computation_latency_ns
+    s["feature_mask"][idx]           = effective_mask
+    # ctypes.memmove: copy 128 bytes feature block ở tốc độ C
+    ctypes.memmove(self._feat_ptrs[idx], ctypes.addressof(raw.features), _FEAT_BYTES)
+```
+
+> **Tại sao dùng Column-first thay vì Row indexing?** Nếu viết `self._store[idx]["exchange_ts"] = ...` (row-first), NumPy sẽ tạo một `numpy.void` object tạm thời — tức là 1 lần allocation cho mỗi tick. Column-first `self._store["exchange_ts"][idx] = ...` ghi thẳng vào mảng, bypass hoàn toàn Python object layer.
+
+**Lockless `_drop_mask` Read** — Khi `signal_congestion()` thay đổi `_drop_mask` từ monitor thread, hot-path đọc giá trị mới **không cần lock**. CPython GIL đảm bảo `LOAD_ATTR` (đọc integer) là atomic ở tầng bytecode. Thêm lock sẽ tốn ~100ns/tick — vô nghĩa vì giá trị chỉ thay đổi mỗi vài giây.
+
+```python
+# commit_raw() — hot-path, KHÔNG lock
+effective_mask = raw.feature_mask & ~self._drop_mask   # GIL-atomic int read
+if effective_mask == 0:
+    return False   # Mọi features bị drop → bỏ qua tick này
+```
+
+**Priority Degradation API** — 3 cấp độ Backpressure:
+
+| Level | Hành vi | Mục đích |
+|-------|---------|----------|
+| 0 | Normal — ghi tất cả features | Hoạt động bình thường |
+| 1 | Drop Trade-derived (Welford, EMA, OFI) | Giảm tải khi hệ thống bắt đầu nghẽn |
+| 2 | Drop ALL market features | Chỉ giữ Risk/Liquidation sentinel |
+
+---
+
+### 3.3. ⚡ Động Cơ Dữ Liệu (Data Engine)
+
+Trái tim xử lý dữ liệu realtime với ngân sách độ trễ (latency budget) **< 10–50µs/tick**.
+
+#### Thu thập dữ liệu (`dong_co_du_lieu/thu_thap/`)
+
+* **WebSocket Gateway** (Binance, OKX, Bybit): Streaming dữ liệu thị trường realtime. Mỗi sàn có Gateway riêng biệt (`binance_ws.py`, `okx_ws.py`, `bybit_ws.py`) với logic parse và error-handling tối ưu.
+* **REST API Pollers**: Polling định kỳ dữ liệu bổ sung — Open Interest (5m), Funding Rate (1h), Long/Short Ratio (5m), Klines (1m). Bao gồm cả `onchain_rest.py` (CryptoQuant: BTC/ETH reserve + netflow).
+
+#### Xử lý dòng (`dong_co_du_lieu/xu_ly_dong/bo_loc/`)
+
+* `orderbook_engine.py` — Engine đồng bộ L2 Orderbook realtime cho cả 3 sàn. Xử lý snapshot + incremental update.
+* `ohlc_engine.py` — Aggregator tổng hợp OHLCV candles từ raw trades.
+
+#### Feature Registry (`dong_co_du_lieu/ong_dan_dac_trung/online/feature_registry.py`)
+
+File **331 dòng**. Trong hệ thống ML, tính năng A có thể phụ thuộc tính năng B và C. Thay vì duyệt qua cây phụ thuộc (dependency graph) mỗi khi có tick mới — việc này tốn CPU — Kairos **biên dịch trước đồ thị (Precompiled DAG)** thành một danh sách phẳng ngay lúc khởi động. Lúc chạy, hệ thống chỉ việc loop qua danh sách này:
+
+```python
+# feature_registry.py — Chạy MỘT LẦN khi khởi động
+def compile_dag() -> dict[int, CompiledPlan]:
+    """Converts the DAG into flat CompiledPlan tuples keyed by event_type_id.
+    Runtime cost per tick: one dict lookup + iteration over ≤5 CompiledSteps.
+    No graph analysis, no conditional branching."""
+    plans = {}
+    for evt_id, fds in DEPENDENCY_TRIGGER_MAP.items():
+        plans[evt_id] = tuple(
+            CompiledStep(mask_bit=fd.mask_bit, update_fn=fd.update_fn)
+            for fd in fds
+        )
+    return plans
+```
+
+**6 Alpha Features được tính toán realtime**:
+
+| Index | Feature | Công thức toán học | Trigger |
+|-------|---------|-------------------|---------|
+| 0 | `MICRO_PRICE` | `(bid_vol × ask + ask_vol × bid) / (bid_vol + ask_vol)` | Orderbook |
+| 1 | `BOOK_PRESSURE` | `bid_vol / (bid_vol + ask_vol)` → Range [0, 1] | Orderbook |
+| 2 | `WELFORD_VAR` | Welford online variance O(1) — `M2 / (n-1)` | Trade |
+| 3 | `EMA_FAST` | `α=2/(10+1)` — Recursive EMA 10-period | Trade |
+| 4 | `EMA_SLOW` | `α=2/(50+1)` — Recursive EMA 50-period | Trade |
+| 5 | `OFI` | Cont, Kukanov & Stoikov (2014) eq.(1) — `cumsum(e_n^B - e_n^A)` | Orderbook |
+
+**OFI (Order Flow Imbalance)** — Thuật toán tiên tiến theo paper của Cont et al. 2014. Tính toán áp lực mua/bán thuần túy dựa trên biến động của mức giá tốt nhất (best bid/ask), thay vì chỉ nhìn vào khối lượng giao dịch:
+
+```python
+# feature_registry.py — OFI implementation
+def _update_ofi(features, state, payload):
+    """Order Flow Imbalance per Cont, Kukanov & Stoikov (2014), eq. (1)."""
+    if best_bid > prev_bid:
+        e_bid = bid_vol                         # Giá tăng: toàn bộ volume là cầu mới
+    elif best_bid == prev_bid:
+        e_bid = bid_vol - state.ofi_prev_bid_vol  # Giá đi ngang: chênh lệch volume
+    else:
+        e_bid = -state.ofi_prev_bid_vol           # Giá giảm: mức giá cũ bị hủy bỏ/khớp hết
+
+    features[FEATURE_IDX_OFI] = state.ofi_cum_bid_delta - state.ofi_cum_ask_delta
+```
+
+#### Incremental Engine (`dong_co_du_lieu/ong_dan_dac_trung/online/incremental_engine.py`)
+
+File **421 dòng**. Động cơ thực thi Hot-Path chính. Mọi thiết kế đều hướng đến mục tiêu: **không tạo bất kỳ Python object nào trong vòng lặp**.
+
+**Dispatch Table O(1)** — Thông thường, để rẽ nhánh xử lý loại dữ liệu (Trade, Orderbook, Liquidation), lập trình viên dùng chuỗi `if/elif/else`. Trong HFT, việc này tốn chu kỳ CPU cho Branch Prediction. Kairos giải quyết bằng mảng con trỏ hàm:
+
+```python
+# incremental_engine.py — Zero-branch routing
+self._dispatch = [
+    self._handle_trade,        # 0: EVT_TRADE
+    self._handle_orderbook,    # 1: EVT_ORDERBOOK
+    self._handle_liquidation,  # 2: EVT_LIQUIDATION
+    self._handle_mark_price,   # 3: EVT_MARK_PRICE
+    self._handle_rest,         # 4: EVT_REST
+]
+# Hot-path: một lần dereference mảng → gọi hàm
+return self._dispatch[event_type_id](symbol_id, ...)
+```
+
+**Object Pool (Ring Buffer)** — Pre-allocate 16,384 slots × 192 bytes = ~3.1 MB trong L3 cache:
+
+```python
+# Pool tĩnh — KHÔNG allocation sau __init__
+POOL_SIZE = 16_384   # power-of-2
+self._pool = [make_empty_raw() for _ in range(POOL_SIZE)]
+# Pre-compute numpy views — np.frombuffer chỉ gọi 1 lần
+self._pool_views = [
+    np.frombuffer(self._pool[i].features, dtype=np.float64)
+    for i in range(POOL_SIZE)
+]
+```
+
+**ScratchPayload** — Thay thế `dict` bằng `@dataclass(slots=True)` tái sử dụng:
+
+```python
+@dataclass(slots=True)
+class ScratchPayload:
+    """Reusable payload buffer; replaces per-tick dict creation."""
+    price:    float = 0.0
+    qty:      float = 0.0
+    bid_vol:  float = 0.0
+    ask_vol:  float = 0.0
+    best_bid: float = 0.0
+    best_ask: float = 0.0
+
+    def __getitem__(self, key: str) -> float:
+        return getattr(self, key)   # Dict-compatible interface
+```
+
+**Transactional State Update** — Mô hình giao dịch ngăn data corruption:
+
+```python
+def _run_plan(self, symbol_id, event_type_id, exchange_ts, receive_ts):
+    # 1. Borrow pool slot; seed features từ store qua memmove
+    ctypes.memmove(
+        ctypes.addressof(raw.features),
+        self._sym_src_ptrs[symbol_id],   # Pre-computed pointer
+        _FEAT_BYTES,                      # 128 bytes, ~0.05µs
+    )
+
+    # 2. Snapshot SymbolState vào scratch (no allocation)
+    _copy_state(state, scratch)
+
+    # 3. Execute update_fns trên draft_view (NOT live store)
+    for step in plan:
+        step.update_fn(draft_view, state, payload)
+
+    # 4. Gate: commit to store — nếu bị reject, rollback
+    if not self._store.commit_raw(raw):
+        _copy_state(scratch, state)   # Rollback — zero allocation
+        return None
+
+    return raw
+```
+
+---
+
+### 3.4. 🧪 Phòng Nghiên Cứu & Kiểm Thử (Research & Replay) `[WIP]`
+
+Bất kỳ quỹ giao dịch định lượng nào cũng đối mặt với một vấn đề cốt lõi: **Simulation-to-Reality Gap** (Khoảng cách giữa mô phỏng và thực tế). Nếu code chạy backtest (kiểm thử quá khứ) khác với code chạy live, kết quả backtest dù có lãi x10 lần cũng trở nên vô nghĩa. Kairos giải quyết vấn đề này bằng kiến trúc đồng nhất.
+
+* **Động cơ phát lại (`nghien_cuu/dong_co_phat_lai/`)**: Đây là thành phần mang tính quyết định. Nó cho phép "bơm" dữ liệu lịch sử từ Data Lake vào lại hệ thống thông qua `IncrementalFeatureEngine` — **sử dụng chính xác 100% cùng một file code** như khi chạy live. Điều này đảm bảo: nếu backtest sinh ra tín hiệu MUA ở giây thứ 5, thì chạy live với cùng dữ liệu đó cũng phải sinh ra MUA ở giây thứ 5.
+* **Nhà máy Alpha (`nghien_cuu/nha_may_alpha/`)**: Nơi ươm mầm và phát triển các chiến lược giao dịch định lượng mới. Mỗi Alpha được đóng gói thành các khối có thể cắm-rút (plug-and-play).
+* **Kiểm thử quá khứ (`nghien_cuu/kiem_thu_qua_khu/`)**: Cung cấp 2 chế độ đáp ứng 2 nhu cầu khác biệt:
+  * `ma_tran_sie_toc/` (Vectorized): Dùng Polars LazyFrame để tính toán ma trận. Tốc độ cực nhanh (hàng chục triệu dòng/giây), phù hợp để quét tìm thông số tối ưu (parameter sweep) rà soát hàng ngàn kịch bản.
+  * `mo_phong_su_kien/` (Event-driven): Tái hiện lại dòng thời gian thực tế, tính toán chính xác độ trễ mạng (latency jitter) và trượt giá (slippage). Chậm hơn nhưng sát với thực tế nhất để kiểm định vòng cuối trước khi đưa lên sàn.
+* **Đánh giá (`nghien_cuu/danh_gia/`)**: Tính toán các chỉ số tài chính chuẩn quỹ như Sharpe Ratio (lợi nhuận/rủi ro), Maximum Drawdown (mức sụt giảm tối đa), Calmar, Win Rate.
+
+---
+
+### 3.5. 🤖 Trí Tuệ Nhân Tạo & MLOps (Machine Learning) `[WIP]`
+
+Bộ não của hệ thống. Trong khi các quy tắc rủi ro và thực thi lệnh được viết bằng code tĩnh, logic dự đoán giá được giao hoàn toàn cho các mô hình Machine Learning.
+
+* **Tối ưu suy luận (ONNX/TensorRT)**: Thư viện PyTorch rất tốt để huấn luyện (`hoc_may/huan_luyen/`), nhưng nó chứa quá nhiều overhead, không đủ nhanh để đưa ra quyết định trong vài chục microsecond. Do đó, sau khi train xong, model được xuất ra định dạng ONNX và chạy suy luận (`hoc_may/suy_luan/`) thông qua ONNX Runtime (viết bằng C++) hoặc TensorRT (tối ưu phần cứng GPU/NPU), giúp giảm độ trễ xuống mức giới hạn vật lý.
+* **Tổ hợp Alpha (`hoc_may/to_hop_alpha/`)**: Một mô hình duy nhất hiếm khi chiến thắng thị trường trong dài hạn. Kairos sử dụng kỹ thuật Ensemble — kết hợp hàng chục/trăm tín hiệu nhỏ lẻ (ví dụ: 1 mô hình soi funding rate, 1 mô hình soi orderbook, 1 mô hình soi on-chain) thành một quyết định giao dịch thống nhất.
+* **Giám sát mô hình (MLOps)**: Thị trường Crypto có tính thay đổi chế độ (regime shift) rất cao. Một mô hình đang lãi đậm hôm nay có thể lỗ sấp mặt vào ngày mai vì "khẩu vị" của thị trường đã đổi. Do đó, hệ thống MLOps (`giam_sat_mo_hinh/`) phải hoạt động liên tục 24/7:
+  * `sai_lech_dac_trung/` (Feature Drift): Phát hiện ngay lập tức khi phân phối của dữ liệu đầu vào khác biệt so với lúc train.
+  * `sai_lech_du_doan/` (Prediction Drift): Theo dõi độ chính xác. Nếu model bắt đầu đoán sai liên tục, hệ thống sẽ tự động kích hoạt Circuit Breaker cắt quyền giao dịch của model đó trước khi nó gây lỗ nặng.
+
+---
+
+### 3.6. ⚔️ Thực Thi Chiến Dịch (Execution Core)
+
+Đây là "hệ thần kinh vận động" của Kairos — nơi tín hiệu giao dịch được biến thành lệnh thực sự gửi lên sàn. File chính `vong_lap_su_kien.py` dài **828 dòng**, là file lớn và phức tạp nhất trong toàn bộ codebase.
+
+Bài toán cốt lõi: Làm sao nhận tín hiệu từ Signal Engine, kiểm tra rủi ro, tính kích thước lệnh, và gửi lên sàn — tất cả trong vài chục microsecond, đồng thời vẫn đảm bảo an toàn tuyệt đối (không bao giờ gửi lệnh sai/trùng/vượt giới hạn)?
+
+Giải pháp: Tách hệ thống thành **5 thread chuyên biệt**, mỗi thread chỉ làm đúng một việc.
+
+#### Kiến trúc 5-Thread (`ExecutionGateway`)
+
+Tại sao cần 5 thread thay vì 1? Vì Python có GIL (Global Interpreter Lock), chỉ 1 thread chạy Python bytecode tại một thời điểm. Nhưng GIL được giải phóng khi gọi I/O (ZMQ recv, HTTP request, file write). Bằng cách tách mỗi loại I/O vào thread riêng, hệ thống tận dụng tối đa song song hóa mà GIL cho phép:
+
+```
+Thread 1  HOT PATH     ZMQ SUB(5557) → versioned ring buffer + risk commit
+Thread 2  EXEC WORKER  asyncio.run() → spin-wait ring → sizing → EMS
+Thread 3  PRICE ORACLE ZMQ SUB(5555, topic=MARK_PRICE) → _price_cache dict
+Thread 4  BOUND LOGGER queue.Queue(5000) drain → Python logging
+Thread 5  WATCHDOG HB  ZMQ PUB(5559) + file mtime touch → dual-channel heartbeat
+```
+
+* **Thread 1 (Hot-Path)**: Nhận tín hiệu từ ZMQ, kiểm tra xem tín hiệu có còn "tươi" không, qua 7 cửa chặn an toàn, rồi đẩy vào Ring Buffer. Thread này tuyệt đối KHÔNG được tạo bất kỳ Python object nào — vì chỉ cần 1 lần GC pause là tín hiệu bị cũ.
+* **Thread 2 (Worker)**: Chờ data từ Ring Buffer, tính kích thước lệnh, rồi gửi lên sàn qua HTTP API. Chạy asyncio event loop để xử lý tối đa 50 HTTP request song song.
+* **Thread 3 (Price Oracle)**: Liên tục cập nhật bảng giá MarkPrice cho tất cả symbol. Thread 1 tra cứu bảng giá này để tính giá trị USD của lệnh.
+* **Thread 4 (Logger)**: Thread 1 và Thread 2 không bao giờ gọi `logging` trực tiếp (vì logging acquire lock). Thay vào đó, chúng đẩy message vào `queue.Queue(5000)`, Thread 4 lấy ra và ghi log.
+* **Thread 5 (Watchdog Heartbeat)**: Gửi tín hiệu "tôi còn sống" định kỳ qua 2 kênh. Nếu Watchdog không nhận được → giết process.
+
+#### Thread 1: Hot-Path — Zero-Allocation Receive
+
+Đây là thread quan trọng nhất. GC bị tắt hoàn toàn (`gc.disable()`) vì chỉ cần 1 lần GC Gen-0 collection (1-5ms) là đủ để tín hiệu giao dịch trở nên vô giá trị (quá cũ). Mọi object đều được tạo sẵn trước khi vào vòng lặp:
+
+Bước đầu tiên, hệ thống tạo một "khuôn đúc" 64 bytes trong RAM — đây là vùng nhớ cố định mà mọi tín hiệu đến sẽ được "đổ" vào, giống như nước đổ vào cùng một cốc mà không cần tạo cốc mới:
+
+```python
+# thuc_thi_lenh/vong_lap_su_kien.py — Thread 1
+gc.disable()   # ← CRITICAL: Tắt GC trên hot-path
+
+# Pre-allocate recv buffer + ctypes overlay — zero-alloc recv
+self._recv_buf    = bytearray(64)
+self._recv_ctypes = (ctypes.c_char * 64).from_buffer(self._recv_buf)
+self._recv_sig    = _SignalEventRaw.from_buffer(self._recv_buf)
+
+while not stop_event.is_set():
+    # ── 1. Zero-alloc recv ──
+    msg = sub.recv(copy=False)           # Frame buffer protocol
+    ctypes.memmove(recv_ctypes, msg.bytes, 64)  # Copy trực tiếp qua pointer
+
+    # ── 2. Staleness check (<5ms) ──
+    if time.perf_counter_ns() - recv_sig.signal_ts > 5_000_000:
+        self._drop("stale"); continue
+
+    # ── 3. Circuit breaker ──
+    if cb_event.is_set():
+        if time.perf_counter() > self._cb_reset_at:
+            cb_event.clear(); self._cb_errors = 0
+        else:
+            self._drop("cb_open"); continue
+
+    # ── 5. Backpressure: ring buffer lag ──
+    lag = write_idx - self._read_idx.value
+    if lag >= ring_size // 2:
+        self._drop("ring_lag"); continue
+
+    # ── 5b. Flow backpressure gate ──
+    if flow_channel.pressure > 0.70:
+        self._drop("flow_bp"); continue
+```
+
+Đoạn code trên mô tả vòng lặp chính: mỗi khi nhận được tín hiệu giao dịch từ ZMQ, hệ thống copy 64 bytes dữ liệu thô vào buffer cố định bằng `ctypes.memmove` (không tạo Python object), rồi lần lượt kiểm tra qua các "cửa chặn" an toàn. Nếu bất kỳ cửa nào từ chối, tín hiệu bị vứt bỏ ngay lập tức và vòng lặp tiếp tục — không lãng phí thời gian.
+
+**7 cửa chặn (Gate)** — Triết lý "Fail Fast": vứt bỏ càng sớm càng tốt, chỉ xử lý tín hiệu thực sự hợp lệ. Mỗi tín hiệu phải vượt qua TẤT CẢ 7 cửa mới được chuyển thành lệnh:
+
+| Gate | Mục đích | Giải thích | Hành vi khi thất bại |
+|------|----------|-----------|---------------------|
+| Staleness | Signal cũ hơn 5ms | Thị trường crypto biến động cực nhanh. Tín hiệu 5ms tuổi đã mất giá trị vì giá có thể đã thay đổi đáng kể. | Drop + log |
+| Circuit Breaker | ≥5 lỗi adapter liên tiếp | Nếu sàn giao dịch đang gặp sự cố (API timeout, rate limit), tiếp tục gửi lệnh chỉ làm tình hình tệ hơn. Tạm dừng 5 giây để sàn hồi phục. | Block 5 giây |
+| Symbol Lookup | Symbol không tồn tại | Tín hiệu cho cặp tiền chưa được đăng ký → không thể giao dịch. | Drop |
+| Price Check | Chưa có MarkPrice | Không thể tính kích thước lệnh (USDT → quantity) nếu chưa biết giá hiện tại. | Drop |
+| Ring Lag | Worker chậm ≥50% ring | Thread 2 đang xử lý chậm (sàn lag?). Nếu tiếp tục nhồi data vào ring buffer sẽ tràn → mất data. | Drop |
+| Flow Backpressure | Pressure > 70% | Toàn hệ thống đang quá tải (queues gần đầy). Giảm lượng input để tránh sập. | Drop |
+| Risk Gate | Pre-trade risk check | Kiểm tra rủi ro cuối cùng: vượt giới hạn lỗ? Quá nhiều lệnh mở? Lệnh trùng? | Rollback + drop |
+
+#### Thread 1 → Thread 2: SPSC Versioned Ring Buffer
+
+Sau khi tín hiệu vượt qua 7 cửa chặn, nó cần được "chuyển giao" từ Thread 1 sang Thread 2 để thực thi. Vấn đề: làm sao 2 thread giao tiếp mà không dùng Lock (vì Lock tốn ~200ns mỗi lần acquire/release)?
+
+Giải pháp là **Versioned Ring Buffer** — một mảng vòng tròn 256 slots. Thread 1 ghi data vào slot, rồi tăng số version lên 1. Thread 2 liên tục kiểm tra version — khi thấy version tăng, biết có data mới. Không cần Lock vì chỉ có 1 writer (Thread 1) và 1 reader (Thread 2):
+
+```python
+# Slot definition — SPSC (Single Producer Single Consumer)
+@dataclass
+class _RingSlot:
+    data:    _SignalEventRaw
+    version: ctypes.c_int64    # Writer += 1 sau khi ghi xong
+
+# Thread 1: Ghi vào ring — 0 allocation
+ring_pos = write_idx & ring_mask         # Bit-mask thay modulo (nhanh hơn)
+slot     = ring[ring_pos]
+ctypes.memmove(ctypes.addressof(slot.data), recv_ctypes, 64)  # Copy 64B
+slot.version.value += 1   # "Xuất bản" cho Thread 2: data đã sẵn sàng
+```
+
+#### Thread 2: Exec Worker — Hybrid Spin-Wait
+
+Thread 2 là nơi lệnh thực sự được gửi lên sàn. Nó chờ data từ Ring Buffer bằng kỹ thuật **Hybrid Spin-Wait**: quay vòng kiểm tra 100 lần (spin) → nếu chưa có data → nhường quyền cho event loop (`await asyncio.sleep(0)`) → lặp lại. Kỹ thuật này cân bằng giữa độ trễ thấp (spin nhanh khi có data) và tiết kiệm CPU (nhường khi không có gì).
+
+Sau khi nhận được tín hiệu, Thread 2 tính kích thước lệnh bằng `Decimal` (không dùng `float` vì sai số thập phân có thể khiến lệnh bị sàn từ chối — ví dụ BTC lot_size = 0.001, nếu float tính ra 0.0019999999 sẽ bị reject):
+
+```python
+# thuc_thi_lenh/vong_lap_su_kien.py — Thread 2
+async def _worker_loop(self):
+    exec_sem = asyncio.Semaphore(50)   # max 50 HTTP calls in-flight
+
+    while not stop_event.is_set():
+        slot = ring[read_idx & ring_mask]
+
+        # ── Hybrid spin-wait: spin 100 lần → yield → lặp lại ──
+        spin = 0
+        while slot.version.value != expected:
+            spin += 1
+            if spin >= 100:
+                spin = 0
+                await asyncio.sleep(0)   # yield event loop
+            if stop_event.is_set(): return
+
+        # ── Sizing: dùng Decimal để tránh float epsilon ──
+        qty_step_d = Decimal(str(cfg.qty_step))
+        steps      = int((order_usdt / price) / cfg.qty_step)
+        qty        = float(qty_step_d * steps)
+```
+
+#### Thread 5: Watchdog Heartbeat — Dual-Channel
+
+Thread 5 giải quyết câu hỏi: "Làm sao biết bot còn sống?". Mỗi vài giây, nó gửi tín hiệu "heartbeat" qua **2 kênh hoàn toàn độc lập**: ZMQ publish và file system touch. Tại sao 2 kênh? Vì nếu chỉ dùng ZMQ mà ZMQ bị lỗi → Watchdog tưởng bot chết → giết nhầm. Ngược lại nếu chỉ dùng file mà filesystem bị treo → cũng giết nhầm. Cần cả 2 kênh đều mất tín hiệu mới kết luận bot thực sự chết:
+
+```python
+# thuc_thi_lenh/vong_lap_su_kien.py — Thread 5
+def _heartbeat_loop(self):
+    while not stop_event.is_set():
+        # Kênh 1: ZMQ PUB — NOBLOCK để không bị treo nếu Watchdog lag
+        hb_pub.send_multipart([b"HB", b""], flags=zmq.NOBLOCK)
+
+        # Kênh 2: Chạm file — chỉ cập nhật timestamp, không ghi nội dung
+        os.utime(alive_path, None)
+
+        stop_event.wait(interval_s)   # Sleep nhưng có thể bị đánh thức
+```
+
+#### Durable WAL (`durable_wal.py`) — 355 dòng
+
+Hãy tưởng tượng: bot đang chạy, vừa gửi lệnh mua 1 BTC lên sàn, nhưng ngay lúc đó máy tính bị mất điện. Khi khởi động lại, bot không biết lệnh đó đã được gửi hay chưa — nếu gửi lại sẽ mua gấp đôi, nếu bỏ qua sẽ mất cơ hội.
+
+**Write-Ahead Log (WAL)** giải quyết vấn đề này bằng cách **ghi nhật ký trước khi hành động**. Trước khi gửi lệnh lên sàn, hệ thống ghi vào WAL "sắp gửi lệnh mua 1 BTC". Khi sàn xác nhận khớp, ghi tiếp "lệnh đã khớp". Nếu máy sập giữa chừng, khi khởi động lại chỉ cần đọc WAL để biết chính xác trạng thái cuối cùng.
+
+File WAL có kích thước cố định ~4MB, được ánh xạ vào RAM qua `mmap` — ghi vào WAL nhanh như ghi vào RAM, nhưng dữ liệu vẫn an toàn trên đĩa. Mỗi entry WAL có cấu trúc cố định 64 bytes (vừa khít 1 cache line CPU, tối ưu tốc độ đọc/ghi):
+
+```python
+class _WALEntry(ctypes.LittleEndianStructure):
+    _pack_ = 1
+    _fields_ = [
+        ("seq_id",       ctypes.c_uint64),    # Số thứ tự tăng dần, không lặp
+        ("timestamp_ns", ctypes.c_int64),      # Thời điểm ghi (nanosecond)
+        ("entry_type",   ctypes.c_uint32),     # Loại sự kiện (enum bên dưới)
+        ("flags",        ctypes.c_uint32),      # Cờ phụ trợ
+        ("payload",      ctypes.c_char * 32),  # Order ID (tối đa 32 ký tự)
+        ("crc32",        ctypes.c_uint32),     # Mã kiểm tra — phát hiện hỏng
+        ("_align",       ctypes.c_uint32),      # Đệm để đạt chính xác 64B
+    ]   # 8+8+4+4+32+4+4 = 64 bytes
+```
+
+Mỗi loại sự kiện được đánh dấu rõ ràng. Lưu ý `ORDER_SENT` được ghi **TRƯỚC** khi gửi lệnh — đây chính là "Write-Ahead" (ghi trước):
+
+```python
+class WALEntryType(IntEnum):
+    ORDER_SENT      = 1   # Ghi TRƯỚC khi gửi → biết lệnh đang "in-flight"
+    ORDER_FILLED    = 2   # Ghi SAU khi sàn xác nhận khớp
+    ORDER_CANCELLED = 3   # Lệnh đã hủy thành công
+    ORDER_REJECTED  = 4   # Sàn từ chối lệnh
+    ORDER_UNKNOWN   = 5   # Hủy lệnh timeout → trạng thái không xác định
+    POSITION_SNAP   = 6   # Ảnh chụp vị thế định kỳ (backup)
+    PNL_CHECKPOINT  = 7   # Điểm kiểm tra lãi/lỗ
+    RISK_OVERRIDE   = 8   # Can thiệp thủ công vào trạng thái rủi ro
+```
+
+**Cơ chế bảo vệ tính toàn vẹn**: Mỗi entry có trường `crc32` — mã kiểm tra tính toàn vẹn. Khi đọc lại, hệ thống tính lại CRC và so sánh. Nếu khác nhau = dữ liệu bị hỏng (do mất điện giữa chừng ghi). Ngoài ra, `fsync()` được gọi mỗi 64 entries, nhưng các sự kiện quan trọng (`ORDER_SENT`, `RISK_OVERRIDE`) luôn `fsync()` ngay lập tức — đảm bảo dữ liệu đã xuống đĩa vật lý.
+
+**Thuật toán Recovery** khi khởi động lại sau sự cố:
+1. **Verify header**: Kiểm tra magic bytes (`b"KAIROS_W"`) — đảm bảo đúng file WAL
+2. **Scan tuần tự**: Đọc từng entry, kiểm tra CRC. Entry đầu tiên có CRC sai = ranh giới hỏng → cắt bỏ phần đuôi corrupt
+3. **Đặt con trỏ**: `seq_next = last_valid_entry.seq_id + 1` — bắt đầu ghi từ sau entry hợp lệ cuối cùng
+4. **Rebuild state**: Replay các entry hợp lệ để khôi phục lại trạng thái in-memory (vị thế, lệnh đang mở, PnL)
+
+---
+
+### 3.7. 🚨 Lưới Bảo Vệ (Risk System)
+
+Trong giao dịch tự động, sai lầm lớn nhất không phải là bỏ lỡ cơ hội — mà là **mất kiểm soát rủi ro**. Một bug nhỏ có thể khiến bot gửi hàng trăm lệnh trong 1 giây, hoặc tập trung 100% vốn vào 1 cặp coin, hoặc tiếp tục giao dịch khi đã lỗ vượt ngưỡng cho phép. Risk Gate là "người gác cổng" có quyền lực tối cao — nó có thể từ chối BẤT KỲ lệnh nào, kể cả khi Signal Engine và Portfolio Engine đều đồng ý.
+
+File `risk_gate.py` dài **605 dòng**, thiết kế theo triết lý: **mọi lệnh đều có tội cho đến khi được chứng minh vô tội**. Hàm `check()` phải hoàn thành trong < 50µs.
+
+#### Pre-trade Risk Gate — `check()` < 50µs
+
+Hàm `check()` là cửa chặn cuối cùng trước khi lệnh được gửi. Nó nhận vào thông tin lệnh (symbol, hướng mua/bán, giá trị USD, order ID) và trả về 0 nếu cho phép, hoặc mã lỗi cụ thể nếu từ chối.
+
+Điểm quan trọng: biến `self._state` là một tham chiếu Python — khi monitor thread cập nhật state mới, nó tạo một state object mới và gán vào `self._state`. Thread 1 đọc `self._state` luôn nhận được một bản state hoàn chỉnh (nhờ GIL đảm bảo assignment là atomic). Không cần lock, không có tình trạng đọc state "nửa cũ nửa mới":
+
+```python
+# quan_tri_rui_ro/kiem_tra_truoc_lenh/risk_gate.py
+def check(self, symbol, side, order_usdt, order_id) -> int:
+    state = self._state   # Đọc tham chiếu — GIL-atomic, không lock
+
+    # KIỂM TRA ĐẦU TIÊN: State có còn "tươi" không?
+    # Nếu state đã cũ 500ms → có thể vị thế/PnL đã thay đổi mà ta chưa biết
+    age_ns = now_ns - state.updated_ns
+    if age_ns > _STALE_HARD_NS:      # > 500ms → NGỪNG hoàn toàn
+        return RiskCode.STATE_STALE_HARD
+    if age_ns > _STALE_REDUCE_NS:    # > 200ms → chỉ cho đóng vị thế
+        if not is_reduce:
+            return RiskCode.STATE_REDUCE_ONLY
+
+    # KIỂM TRA TUẦN TỰ: chạy qua từng rule
+    # Dừng NGAY khi gặp rule đầu tiên fail (fail-fast)
+    for rule in self._rules:
+        code = rule.check(symbol, side, order_usdt, state, self, now_ns)
+        if code: return code          # Trả mã lỗi → lệnh bị từ chối
+
+    return RiskCode.OK                # Tất cả rules pass → cho phép
+```
+
+**6 Rule kiểm tra tuần tự** — Mỗi rule giải quyết một loại rủi ro cụ thể. Thứ tự quan trọng: rule "rẻ" (tính toán ít) đặt trước để reject nhanh, rule "đắt" đặt sau:
+
+| # | Rule | Chức năng chi tiết | Ngưỡng ví dụ |
+|---|------|-------------------|-------------|
+| 1 | `MaxDailyLossRule` | Nếu tổng lỗ trong ngày vượt ngưỡng → ngừng giao dịch. Tránh "revenge trading" (cố gỡ gạc sau khi thua). | `max_daily_loss_usdt` |
+| 2 | `MaxDrawdownRule` | Nếu equity giảm quá nhiều so với đỉnh → ngừng. Bảo vệ vốn khi thị trường đi ngược chiến lược. | `max_drawdown_pct` |
+| 3 | `MaxOrderRateRule` | Giới hạn số lệnh/giây và lệnh/phút. Ngăn chặn vòng lặp vô hạn gửi lệnh do bug. | `per_sec`, `per_min` |
+| 4 | `DuplicateOrderGuardRule` | Nếu lệnh trùng symbol+side+size trong khoảng thời gian ngắn → chặn. Ngăn gửi lệnh trùng do retry logic lỗi. | `duplicate_cooldown_ms` |
+| 5 | `MaxOpenOrdersRule` | Giới hạn số lệnh đang mở trên mỗi symbol. Tránh "lệnh treo" quá nhiều ăn margin. | `max_open_orders_per_symbol` |
+| 6 | `MaxPositionConcentrationRule` | Không cho phép tập trung quá nhiều vốn vào 1 cặp coin. Đa dạng hóa bắt buộc. | `max_concentration_pct` |
+
+**Rate Bucket O(1)** — 1000-bucket per-second window + 60-bucket per-minute window:
+
+```python
+# Generation-safe full-cycle reset — tránh negative count khi time jump >1000ms
+self._sec_buckets    = array.array("q", [0] * 1000)
+self._sec_bucket_gen = array.array("q", [0] * 1000)   # generation tag
+```
+
+#### Watchdog Kill Switch (`nguoi_gac_cong/watchdog/`)
+
+Out-of-band Watchdog ping hệ thống qua 2 kênh song song:
+1. **ZMQ PUB/SUB** (port 5559): Watchdog SUB nhận HB để đo miss count.
+2. **File mtime** (`/tmp/kairos.alive`): Kênh dự phòng độc lập với ZMQ.
+
+Watchdog chỉ trigger khi **CẢ HAI** kênh miss ≥ threshold liên tiếp → tránh false-positive. Khi trigger:
+* Hủy mọi kết nối REST API
+* Market Close toàn bộ vị thế
+* Đặt file cờ `system.KILLED` → chặn khởi động cho đến khi điều tra xong
+
+---
+
+### 3.8. 🔗 Hạ Tầng & Giao Tiếp (Infrastructure)
+
+Cấu trúc xương sống kết nối các module rời rạc thành một thể thống nhất.
+
+#### Event Bus (`ha_tang/bus_su_kien/zmq_bus.py`)
+
+Hệ thần kinh trung ương sử dụng ZeroMQ PUB/SUB:
+
+```python
+# ha_tang/bus_su_kien/zmq_bus.py
+class AsyncEventBus:
+    """Mọi module đều cắm vào đây để Đọc (SUB) hoặc Ghi (PUB) Sự kiện."""
+    def __init__(self,
+        pub_url: str = "inproc://kairos-event-bus",   # 10-50µs/msg
+        sub_url: str = "inproc://kairos-event-bus",
+    ):
+        self.ctx = zmq.asyncio.Context()
+
+    async def publish(self, topic: str, payload_dict):
+        message_bytes = orjson.dumps(payload_dict)    # orjson: siêu tốc
+        await self.publisher.send_multipart([
+            topic.encode('utf-8'), message_bytes
+        ])
+```
+
+* HWM = 10,000 — Chặn tràn RAM, message thừa bị drop (không block).
+* `inproc://` — Cùng process: loại bỏ TCP kernel stack, chỉ mất ~10-50µs/msg.
+* `orjson` — Serialize JSON nhanh gấp ~10× so với `json` stdlib.
+
+#### Adaptive Shedder (`shedder.py`) — 248 dòng
+
+Trong thời điểm thị trường biến động mạnh (Flash Crash), lượng tin nhắn từ sàn có thể tăng gấp 10-50 lần bình thường. Nếu bot cố gắng xử lý tất cả, độ trễ sẽ tăng từ microsecond lên hàng giây → giao dịch bằng dữ liệu cũ → lỗ nặng.
+Adaptive Shedder giải quyết bài toán: **Khi nào nên vứt bỏ data cũ để bảo vệ hệ thống?** Nó sử dụng động cơ áp suất không khóa (Lock-free) với **4-factor multi-dimensional pressure model**:
+
+**Công thức Áp Suất Đa Nhân Tố**:
+
+```
+P = w1 × drop_rate_norm     (35% — tỷ lệ vứt data/giây)
+  + w2 × depth_ratio         (30% — mức đầy của queues)
+  + w3 × latency_ratio       (20% — độ trễ vượt ngưỡng target)
+  + w4 × growth_ratio         (15% — tốc độ tăng queue depth)
+  → clamped to [0.0, 1.0]
+```
+
+**Continuous-time EWMA** — Thay vì dùng discrete IIR filter (bị ảnh hưởng bởi sample rate không đều), Kairos sử dụng hàm mũ liên tục `e^(-dt/τ)` để smooth:
+
+```python
+# ha_tang/kiem_soat_luu_luong/drop_policy/shedder.py
+def update(self, latency_ns: float = 0.0) -> float:
+    """Recompute multi-factor pressure. Returns pressure ∈ [0.0, 1.0]."""
+    dt    = max(1e-9, now - self._last_ts)
+    decay = math.exp(-dt / self._tau)   # τ = 5.0s — physics-like decay
+
+    # Drop rate: sum 1-second ring window (10 slots × 100ms)
+    total_drops_1s = sum(
+        self._buckets[i] for i in range(10)
+        if now_ms - self._bucket_ts_ms[i] <= 1000
+    )
+    raw_drop_norm   = min(1.0, total_drops_1s / self._max_drop_rate_norm)
+    self._drop_rate = self._drop_rate * decay + raw_drop_norm * (1.0 - decay)
+
+    # Composite pressure
+    p = (self._w1 * self._drop_rate
+       + self._w2 * self._depth_ratio
+       + self._w3 * latency_ratio
+       + self._w4 * growth_ratio)
+    self._pressure = max(0.0, min(1.0, p))
+```
+
+**Hysteresis State Machine (Schmitt Trigger)** — Chống dao động trạng thái khi pressure giao động quanh ngưỡng:
+
+```python
+# Schmitt Trigger: 2 ngưỡng riêng biệt
+if p > self._high_thresh:      # 0.70 → bật shedding
+    self._state = PressureLevel.HIGH
+elif p < self._low_thresh:     # 0.40 → tắt shedding
+    self._state = PressureLevel.LOW
+# Dải [0.40, 0.70]: giữ nguyên state → KHÔNG ping-pong
+```
+
+> **Tại sao cần Hysteresis?** Nếu chỉ dùng 1 ngưỡng (ví dụ 0.5), khi pressure dao động 0.49 → 0.51 → 0.49 liên tục, hệ thống sẽ bật/tắt shedding hàng chục lần/giây → hiệu ứng "giật" rất xấu. Với 2 ngưỡng, phải vượt qua 0.70 mới bật, và phải dưới 0.40 mới tắt.
+
+**Head-Drop O(1)** — Khi queue đầy, vứt phần tử cũ nhất (`deque.popleft()` — C-level atomic):
+
+```python
+def maybe_drop(self, q: deque, priority_id: int) -> bool:
+    if len(q) >= self._max_sizes[priority_id]:
+        q.popleft()          # C-level atomic head drop — O(1)
+        self._dropped += 1   # INPLACE_ADD bytecode — GIL-atomic
+        return True
+    return False
+```
+
+#### Channel Manager (`channel_manager.py`)
+
+Quản lý 3 hàng đợi SPSC theo ưu tiên:
+
+| Priority | Kênh | Nội dung |
+|----------|------|----------|
+| CRITICAL | Kill Switch, Risk Alert | Luôn được drain trước |
+| SIGNAL | Ring buffer events | Ưu tiên cao |
+| DATA | Market data updates | Drain sau cùng, có fairness guarantee |
+
+#### Event Schema (`luoc_do_du_lieu/v1/`)
+
+Chuẩn hóa cấu trúc toàn hệ thống bằng ctypes struct. Mọi event được đóng gói ở kích thước cố định để fit vừa CPU cache line:
+
+* `_FeatureEventRaw` — **192 bytes** (3 cache lines 64B): chứa `symbol_id` (uint32), `exchange_ts` (int64), `receive_ts` (int64), `processed_ts` (int64), `source_latency_ns` (int64), `computation_latency_ns` (int64), `feature_mask` (uint32), và `features[16]` (float64 × 16 = 128B).
+* `_SignalEventRaw` — **64 bytes** (1 cache line): chứa `symbol_id` (uint32), `direction` (int8), `signal_ts` (int64), `exchange_ts` (int64), `receive_ts` (int64), `feature_ts` (int64).
+
+> **Tại sao 192 bytes?** 192 = 3 × 64B cache lines. Khi CPU nạp features của symbol `i`, nó kéo đúng 3 cache lines vào L1 cache. Header (symbol_id, timestamps) nằm trên cache line thứ 1, features nằm trên cache lines 2-3. Symbol `i+1` bắt đầu ở cache line thứ 4 → không bao giờ bị False-sharing.
+
+#### Time Validator (`dong_ho_thoi_gian/time_validator.py`) — 300 dòng
+
+Đảm bảo tính chính xác thời gian ở cấp sub-microsecond. Sử dụng **ctypes truy xuất trực tiếp `librt.so.1`** để đọc POSIX clock:
+
+```python
+# ha_tang/dong_ho_thoi_gian/time_validator.py
+class _Timespec(ctypes.Structure):
+    _fields_ = [("tv_sec", ctypes.c_long), ("tv_nsec", ctypes.c_long)]
+
+_librt = ctypes.CDLL("librt.so.1", use_errno=True)
+_librt.clock_gettime.argtypes = [ctypes.c_int, ctypes.POINTER(_Timespec)]
+
+def _clock_ns(clock_id: int) -> int:
+    """Read a POSIX clock in nanoseconds — sub-µs precision."""
+    ts = _Timespec()
+    if _librt.clock_gettime(clock_id, ctypes.byref(ts)) == 0:
+        return ts.tv_sec * 1_000_000_000 + ts.tv_nsec
+```
+
+**3 nguồn thời gian theo thứ tự ưu tiên**:
+
+| Nguồn | Độ chính xác | Điều kiện |
+|-------|-------------|----------|
+| PTP (IEEE 1588) | Sub-microsecond | `phc2sys` + `ptp4l` đang chạy |
+| NTP / chrony | ~1-10ms | Fallback khi PTP crash |
+| CLOCK_MONOTONIC | Chỉ thứ tự | Last resort — chỉ đảm bảo event ordering |
+
+**Mô hình Graceful Degradation**:
+
+| Trạng thái | Điều kiện | `capital_multiplier` | Hành vi |
+|-----------|-----------|---------------------|--------|
+| NOMINAL | Skew < 100µs | 1.0 | Giao dịch bình thường |
+| DEGRADED | Skew > 100µs hoặc PTP crash | 0.2 | Giảm 80% kích thước lệnh |
+| CRITICAL | Skew > 1ms hoặc clock diverge | 0.0 | Đóng băng toàn bộ giao dịch |
+
+> **Tại sao Clock Skew nguy hiểm?** OFI (Order Flow Imbalance) so sánh `best_bid` hiện tại với `prev_best_bid` dựa trên timestamp ordering. Nếu clock sai 1ms, hệ thống có thể xử lý tick cũ trước tick mới → OFI tính ra giá trị ngược dấu → signal sai → lệnh sai hướng.
+
+---
+
+### 3.9. 📊 Giám Sát & Kiểm Thử (Monitoring & Testing)
+
+#### Latency Tracker (`giam_sat/theo_doi_do_tre/tracker.py`) — 93 dòng
+
+Đo lường 4 phân đoạn độ trễ. Tất cả `record_*()` đều **O(1), zero-allocation**:
+
+```python
+# giam_sat/theo_doi_do_tre/tracker.py
+class LatencyTracker:
+    """Hot-path safe. All record_*() methods are O(1), zero-allocation."""
+    def __init__(self):
+        self.tick_to_signal  = HdrHistogram()  # exchange_ts → signal_ts
+        self.tick_to_feature = HdrHistogram()  # exchange_ts → feature_ts
+        self.signal_to_order = HdrHistogram()  # signal_ts  → order_submit
+        self.order_to_fill   = HdrHistogram()  # order_submit → fill
+
+    def record_signal(self, exchange_ts, receive_ts, feature_ts, signal_ts):
+        """O(1). Call from Thread 1 (hot loop)."""
+        self.tick_to_signal.record(max(0, signal_ts - exchange_ts))
+        self.tick_to_feature.record(max(0, feature_ts - exchange_ts))
+```
+
+| Phân đoạn | Clock Domain | Thread |
+|-----------|-------------|--------|
+| Tick → Feature | wall clock (cross-process) | Data Engine |
+| Tick → Signal | wall clock (cross-process) | Signal Engine |
+| Signal → Order | wall clock (same process) | Thread 1 |
+| Order → Fill | monotonic (in-process) | Thread 2 |
+
+#### HdrHistogram (`giam_sat/theo_doi_do_tre/histogram.py`) — 145 dòng
+
+Việc đo đạc độ trễ (latency) không được phép làm chậm chính hệ thống đang được đo. Nếu lưu mọi điểm dữ liệu độ trễ vào danh sách (list), RAM sẽ bị ăn mòn rất nhanh và gây GC pause. Kairos sử dụng **HdrHistogram** — cấu trúc dữ liệu đếm độ trễ siêu nhẹ, **O(1) record, zero-allocation**:
+
+**Bucket Layout (7-bit mantissa, 128 sub-buckets per exponent)**: Thay vì lưu giá trị chính xác, độ trễ được phân loại vào các "rổ" (buckets). Độ trễ càng lớn, "rổ" càng rộng (sai số 1% không đáng kể đối với 10 giây, nhưng 1µs rất quan trọng đối với độ trễ 10µs).
+
+```python
+# giam_sat/theo_doi_do_tre/histogram.py
+MANTISSA_BITS    = 7
+SUB_BUCKET_COUNT = 128        # 2^7
+_MIN_NS          = 1_000      # 1 µs — clamp floor
+_MAX_NS          = 10_000_000_000  # 10 s — clamp ceiling
+ARRAY_SIZE       = 3_584      # 28 × 128 slots = ~28 kB total
+
+def record(self, value_ns: int) -> None:
+    """O(1). Zero allocation. GIL-atomic +=1."""
+    bit_len = value_ns.bit_length()
+    if bit_len <= MANTISSA_BITS:
+        idx = value_ns                    # bucket 0: direct index
+    else:
+        shift = bit_len - MANTISSA_BITS
+        idx   = shift * 128 + ((value_ns >> shift) & 0x7F)
+    self._cur[idx] += 1
+```
+
+> **Tại sao không dùng list append?** `list.append(latency)` tạo Python int object mới → GC pressure. HdrHistogram chỉ tăng bộ đếm (`+=1`) tại một vị trí cố định trong mảng `array.array("L")` đã cấp phát từ trước — **hoàn toàn không sinh ra object rác**.
+
+**Double-Buffering** — Vấn đề: làm sao để luồng đo đạc (Reporter) có thể đọc kết quả hiển thị lên màn hình mà không khóa (lock) luồng ghi dữ liệu (Hot-path)? Giải pháp: Dùng 2 mảng (buffers). Trong vòng 30 giây, Hot-path ghi vào mảng A. Sau 30s, Reporter đảo ngược con trỏ (mảng A thành mảng đóng băng để đọc, mảng B làm mới để Hot-path ghi). Việc tráo đổi này là atomic dưới GIL:
+
+```python
+def swap(self) -> "HdrHistogram":
+    """Off-path. Rotate buffers atomically under GIL."""
+    old_cur, old_frozen = self._cur, self._frozen
+    for i in range(ARRAY_SIZE):
+        old_frozen[i] = 0          # Xóa sạch mảng cũ
+    self._cur    = old_frozen      # Tráo mảng: mảng cũ thành mảng ghi mới
+    self._frozen = old_cur         # Mảng vừa ghi xong mang ra đọc
+    return self
+```
+
+#### System Metrics Collector (`giam_sat/chi_so_hieu_suat/collector.py`) — 383 dòng
+
+Hệ thống cần theo dõi RAM, CPU, và mức sử dụng GC liên tục. Nhưng các lệnh như lấy CPU (`psutil.cpu_percent()`) hay quét RAM (`tracemalloc.take_snapshot()`) là I/O-blocking — chúng có thể treo chương trình hàng chục mili-giây.
+
+Giải pháp: Chạy Collector trên **Dedicated OS Thread** riêng biệt (Thread của hệ điều hành, không phải asyncio). Kiến trúc 3 tầng:
+
+```
+Collector thread  ──push()──►  _buffer  ──drain()──►  Reporter (asyncio)
+TM daemon thread  ──────────►  ctypes.c_double       ──►  Collector reads
+```
+
+**Tracemalloc Safety Gates** — Tính năng "chụp ảnh RAM" (`take_snapshot`) rất đắt đỏ (stop-the-world). Do đó, nó bị khóa sau 3 "cửa an toàn":
+
+| Gate | Điều kiện | Mục đích |
+|------|-----------|----------|
+| RSS Threshold | `RSS > tracemalloc_rss_threshold_mb` | Chỉ chụp ảnh RAM nếu máy đang tốn quá nhiều RAM |
+| Cooldown | `≥ tracemalloc_cooldown_s` giữa 2 lần | Tránh việc chụp liên tục gây nghẽn máy |
+| Single-flight Lock | `threading.Lock` non-blocking | Đảm bảo chỉ có 1 tiến trình chụp ảnh RAM tại một thời điểm |
+
+**GC Metrics** — First-class HFT signal. Việc theo dõi xem Garbage Collector có bị tạm ngưng hay không là rất quan trọng. Bằng cách lấy delta của `gc.get_stats()["collections"]`, ta biết ngay trong giây vừa rồi hệ thống có bị khựng vì dọn rác hay không.
+
+```python
+# collector.py — GC pause detection
+gc_collections_delta: tuple[int, int, int]  # GC runs per generation
+# delta > 0 ⟹ GC pause occurred during sample interval
+```
+
+#### Alert System (`giam_sat/canh_bao/`)
+
+* `alert_manager.py` — Orchestrator quản lý Alert với Deduplication (chống spam).
+* `alert_rules.py` — Rule Engine đánh giá cảnh báo dựa trên PnL, Latency, Error Rate.
+* `telegram_sender.py` — Gửi tin nhắn Alert qua Telegram Bot API.
+
+#### Test Suite (`test/`)
+
+| File | Mục đích |
+|------|----------|
+| `test_chaos_risk.py` | Chaos Test — cố tình gây lỗi để kiểm tra phục hồi |
+| `test_execution_pipeline.py` | End-to-end pipeline thực thi lệnh |
+| `test_feature_layer.py` | Kiểm thử lớp tính năng |
+| `test_signal_engine.py` | Kiểm thử engine tín hiệu |
+| `test_profiler.py` | Đo hiệu năng hệ thống |
+| `test_state.py` | Kiểm thử WAL + state recovery |
+| `test_ws_gateway_fixes.py` | Regression tests cho WebSocket fixes |
+
+---
+
+## 4. 💎 Điểm Nhấn Kỹ Thuật (HFT-Inspired Engineering Highlights)
+
+Phần này tóm tắt các triết lý thiết kế cốt lõi của Kairos. Dù được phát triển trên Python, hệ thống đạt giới hạn cực đại về hiệu năng nhờ áp dụng tư duy của C++/Rust vào từng dòng code.
+
+---
+
+### 4.1. Triết lý Zero-Allocation (Chống GC Pauses)
+
+**Vấn đề**: Trong Python, mỗi lần tạo `dict`, `list`, hay `bytes` mới sẽ kích hoạt Garbage Collector. GC Gen-0 collection có thể tạo latency spike 1-5ms, Gen-2 lên đến 50ms — thảm họa trong hệ thống giao dịch tần suất cao.
+
+**Giải pháp Kairos**: Pre-allocation 100%. Mọi object đều được khởi tạo MỘT LẦN DUY NHẤT ở `__init__`. Hot-path chỉ ghi đè dữ liệu lên vùng nhớ đã cấp phát.
+
+```python
+# ❌ ANTI-PATTERN: Tạo dict mới MỖI tick → GC pressure
+payload = {"price": 100.0, "qty": 1.0}   # 1 dict + 2 str keys + 2 float = 5 objects
+
+# ✅ KAIROS: Ghi đè field trên pre-allocated dataclass → zero objects
+self._scratch_payload.price = 100.0       # STORE_ATTR bytecode — 0 objects
+self._scratch_payload.qty   = 1.0
+```
+
+**Danh sách đối tượng Pre-allocated trong Kairos**:
+
+| Object | Vị trí | Kích thước | Mục đích |
+|--------|--------|-----------|----------|
+| `_RingSlot[256]` | `vong_lap_su_kien.py` | 256 × 72B | SPSC Ring Buffer |
+| `_recv_buf` | `vong_lap_su_kien.py` | 64 bytes | ZMQ recv overlay |
+| `ScratchPayload` | `incremental_engine.py` | 48 bytes | Dict replacement |
+| `SymbolState[N]` | `incremental_engine.py` | Per-symbol | Rollback snapshot |
+| `_pool[16384]` | `incremental_engine.py` | 16K × 192B = 3.1MB | Object Pool |
+| `_pool_views[16384]` | `incremental_engine.py` | NumPy views | frombuffer cache |
+| `OnlineFeatureStore._store` | `memory_store.py` | 256 × 192B = 48KB | Main feature array |
+| `ROB arrays` | `memory_store.py` | 256 × 64 × 16 × 8B | Reorder Buffer |
+| `HdrHistogram._cur` | `histogram.py` | 3584 × 8B = 28KB | Latency buckets |
+| `_WALEntry[65536]` | `durable_wal.py` | 65K × 64B = 4MB | WAL mmap |
+
+> **Kết quả**: Thread 1 (Hot-Path) gọi `gc.disable()` hoàn toàn. Không có GC nào chạy trên thread xử lý tín hiệu.
+
+---
+
+### 4.2. Triết lý Memory Alignment (Chống False-Sharing)
+
+**Vấn đề**: Khi 2 threads đọc/ghi các biến nằm chung 1 CPU cache line (64B), phần cứng liên tục invalidate cache → hiệu năng sụt giảm nghiêm trọng dù code đa luồng.
+
+**Giải pháp Kairos**: Padding mọi struct quan trọng vào bội số của 64 bytes:
+
+```python
+# ❌ Struct 50 bytes — 2 symbols có thể nằm chung cache line
+class BadStruct(ctypes.Structure):
+    _fields_ = [("data", ctypes.c_char * 50)]  # 50B → False-sharing risk
+
+# ✅ Struct CHÍNH XÁC 64 bytes — 1 struct = 1 cache line = 0 False-sharing
+class _WALEntry(ctypes.LittleEndianStructure):
+    _pack_ = 1
+    _fields_ = [
+        ("seq_id",   ctypes.c_uint64),    # 8B
+        ("ts_ns",    ctypes.c_int64),     # 8B
+        ("type",     ctypes.c_uint32),    # 4B
+        ("flags",    ctypes.c_uint32),    # 4B
+        ("payload",  ctypes.c_char * 32), # 32B
+        ("crc32",    ctypes.c_uint32),    # 4B
+        ("_align",   ctypes.c_uint32),    # 4B ← PADDING để đạt 64B
+    ]   # Total: 8+8+4+4+32+4+4 = 64 bytes ✓
+```
+
+---
+
+### 4.3. Triết lý ctypes.memmove (Bypass Python Object Layer)
+
+**Vấn đề**: Copy 16 float64 bằng Python for-loop tạo 16 temporary Python float objects, tốn ~1-2µs.
+
+**Giải pháp Kairos**: `ctypes.memmove` copy trực tiếp 128 bytes ở tốc độ C (~0.05µs, nhanh gấp **20-40×**):
+
+```python
+# ❌ Python loop: 16 objects tạm, ~1.5µs
+for i in range(16):
+    draft[i] = store_features[i]   # Mỗi lần = PyFloat_FromDouble + GC track
+
+# ✅ ctypes.memmove: 0 objects, ~0.05µs
+ctypes.memmove(
+    ctypes.addressof(raw.features),       # dest: pool slot
+    self._sym_src_ptrs[symbol_id],        # src: pre-computed pointer
+    128,                                   # 16 × 8 bytes
+)
+# Pointer pre-computed tại register_symbol() → hot-path không gọi .ctypes.data
+```
+
+---
+
+### 4.4. Triết lý Transactional Update (Chống Data Corruption)
+
+**Vấn đề**: Nếu update feature bị reject giữa chừng (backpressure/stale), `SymbolState` (Welford mean, EMA) đã bị đột biến nhưng feature không được commit → state và store bất đồng bộ vĩnh viễn.
+
+**Giải pháp Kairos**: Mô hình giao dịch 4 bước — compute trên draft, commit hoặc rollback:
+
+```
+                    ┌─ commit_raw() PASS ──► Ghi vào Live Store ✓
+Snapshot → Draft ──►│
+                    └─ commit_raw() FAIL ──► Rollback SymbolState từ Scratch ✓
+```
+
+Cả accept path và reject path đều **zero allocation** nhờ pre-allocated scratch buffer.
+
+---
+
+### 4.5. Triết lý Mô phỏng Vi Cấu Trúc (Realistic Paper Trading)
+
+**Vấn đề**: Paper trading thông thường khớp lệnh ở mid-price ngay lập tức → tạo ảo tưởng lợi nhuận. Khi chạy live, slippage + latency + toxicity ăn mòn toàn bộ alpha.
+
+**Giải pháp Kairos**: Paper Engine bắt chước hành vi thị trường thực:
+
+| Yếu tố | Cách mô phỏng | Tác động |
+|--------|--------------|---------|
+| Network Latency | Lognormal Jitter (heavy-tail) | Lệnh đến sàn bị trễ 5-500ms |
+| Slippage | Kyle's Alpha — self-impact | Lệnh lớn đẩy giá bất lợi |
+| Liquidity Mirage | Spoofing simulation | Sổ lệnh "dày" nhưng rút trước khi khớp |
+| Adverse Selection | Toxicity ratio | Lệnh bị front-run bởi informed trader |
+| Flash Crash | `shock_simulator.py` | Giá lao dốc 5-20% trong vài giây |
+
+---
+
+### 4.6. Triết lý Dual-Channel Failsafe (Chống Single Point of Failure)
+
+**Vấn đề**: Watchdog 1 kênh ZMQ: ZMQ crash = mất giám sát = bot giao dịch mất kiểm soát.
+
+**Giải pháp Kairos**: 2 kênh hoàn toàn độc lập:
+
+```
+Thread 5 ──► ZMQ PUB (port 5559)  ──► Watchdog SUB  ──┐
+             │                                          ├─ BOTH miss ≥ N → KILL
+Thread 5 ──► os.utime(alive_path) ──► Watchdog stat ──┘
+```
+
+Watchdog chỉ kích hoạt Kill Switch khi **CẢ HAI** kênh mất tín hiệu liên tiếp → loại bỏ false-positive từ network glitch. Khi trigger: Market Close toàn bộ vị thế → đặt `system.KILLED` → chặn khởi động cho đến khi điều tra.
+
+---
+
+### 4.7. Triết lý Clock Integrity (Chống Exchange Exploit)
+
+**Vấn đề**: Clock skew 1ms khiến OFI/EMA tính sai → tín hiệu sai → lệnh sai hướng. Tệ hơn: sàn có thể exploit độ trễ (last-look advantage).
+
+**Giải pháp Kairos**: `TimeValidator` 3 tầng — PTP → NTP → Monotonic, với graceful degradation:
+
+```python
+# Degradation chain trong Thread 1 (hot-path):
+_tv_mult = time_validator.capital_multiplier()
+
+if _tv_mult == 0.0:               # CRITICAL: clock diverge
+    risk.rollback(sid, order_usdt)
+    self._drop("time_critical")    # Đóng băng 100% giao dịch
+
+if _tv_mult < 1.0:                # DEGRADED: PTP crash
+    # Cho qua 1/5 lệnh → giảm exposure 80%
+    if write_idx % round(1.0 / _tv_mult) != 0:
+        risk.rollback(sid, order_usdt)
+        self._drop("time_degraded")
+```
+
+> **Triết lý**: Không bao giờ dừng ngay — luôn degrade gracefully. Giảm exposure từ từ để tránh cascade liquidation.
+
+---
+
+## 5. 🛠️ Công Nghệ & Thư Viện (Tech Stack)
+
+| Thành phần | Công nghệ | Vai trò |
+|-----------|-----------|---------|
+| Ngôn ngữ chính | Python 3.11+ | Core logic, async I/O |
+| Messaging | ZeroMQ (pyzmq) | Event Bus PUB/SUB, inproc/tcp |
+| Serialization | orjson | JSON serialize ~10× nhanh hơn stdlib |
+| Numerical | NumPy, ctypes | Structured arrays, memmove, zero-alloc |
+| Data Format | Apache Parquet | Columnar storage, Hive partitioning |
+| Data Processing | Polars | Vectorized backtest (LazyFrame) |
+| ML Framework | PyTorch, ONNX | Model training & inference |
+| Monitoring | psutil, tracemalloc | CPU/RAM/GC metrics |
+| Alerting | Telegram Bot API | Real-time alert notifications |
+| Containerization | Docker, docker-compose | Infrastructure packaging |
+| Configuration | YAML, .env | Decoupled config management |
+| Crypto Exchanges | Binance, OKX, Bybit | REST + WebSocket APIs |
+| On-chain Data | CryptoQuant API | BTC/ETH reserve, netflow |
+
+---
+
+## 6. 📊 Thống Kê Codebase
+
+| Metric | Giá trị |
+|--------|---------|
+| Tổng số module Python | 50+ files |
+| File lớn nhất | `vong_lap_su_kien.py` — 828 dòng |
+| File quan trọng nhất | `risk_gate.py` — 605 dòng, 6 rules |
+| Feature Engine | `incremental_engine.py` — 421 dòng |
+| Feature Store | `memory_store.py` — 337 dòng |
+| Durable WAL | `durable_wal.py` — 355 dòng |
+| Feature Registry | `feature_registry.py` — 331 dòng |
+| Latency Tracker | `tracker.py` — 93 dòng (tinh gọn) |
+| Số Alpha Features | 6 (MicroPrice, BookPressure, WelfordVar, EMA Fast/Slow, OFI) |
+| Số Thread song song | 5 (Hot-Path, Worker, Oracle, Logger, Watchdog) |
+| Số Exchange hỗ trợ | 3 (Binance, OKX, Bybit) |
+| Số Risk Rules | 6 (DailyLoss, Drawdown, Rate, Duplicate, OpenOrders, Concentration) |
+| WAL File Size | ~4MB (32 + 65536 × 64 bytes) |
+| Pool Size | 16,384 slots × 192 bytes = ~3.1 MB |
+| Ring Buffer | 256 slots (power-of-2) |
+| ROB Window | 5ms, 64 slots |
+| Target Latency | < 10–50µs per tick |
+
+---
+
+## 7. 🚀 Hướng Phát Triển Tiếp Theo
+
+1. **AI & Model Development** — Triển khai ONNX inference engine trong `hoc_may/suy_luan/`. Tích hợp Transformer-based Alpha model.
+2. **Replay Engine** — Xây dựng logic phát lại trong `nghien_cuu/dong_co_phat_lai/` để validate chiến lược với dữ liệu WAL thực tế.
+3. **Chaos Testing** — Triển khai bộ test toàn diện để verify Watchdog + Risk Gate xử lý đúng khi cố tình inject failures.
+4. **Grafana Dashboard** — Kết nối `SystemMetricsReporter` và `LatencyReporter` vào Grafana qua Prometheus exporter.
+5. **Multi-Strategy Execution** — Kích hoạt `danh_ba_chien_luoc/` để chạy nhiều Alpha strategies song song với vốn phân bổ động.
+
+---
+
+> **Kairos Quant Enterprise v3** — *"Thời điểm quyết định"* (Καιρός)
+>
+> Mọi microsecond đều có giá trị. Mọi dòng code đều có mục đích.
