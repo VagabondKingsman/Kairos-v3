@@ -23,6 +23,8 @@ KAIROS v3/
 │   ├── ket_noi/                        # (Configs kết nối sàn)
 │   │   ├── exchanges.yaml
 │   │   └── symbol_master.yaml
+│   ├── ha_tang/                        # (Configs cho tầng Infrastructure)
+│   │   └── flow_config.yaml            # Cấu hình Backpressure & Quotas
 │   └── quan_tri_rui_ro/                # (Configs quản trị rủi ro)
 │       └── risk_config.yaml
 │
@@ -43,7 +45,7 @@ KAIROS v3/
 # ==========================================
 ├── ho_du_lieu/
 │   ├── tho/                            # (Raw) Dữ liệu gốc bất biến
-│   │   ├── lich_su_khop_lenh/          # (Trades) Chuẩn: symbol=BTCUSDT/date=2024-01-01/part-000.parquet
+│   │   ├── lich_su_khop_lenh/          # (Trades) symbol=BTCUSDT/date=2024-01-01/part-000.parquet
 │   │   ├── so_lenh_l2/                 # (Orderbook L2) Phân mảnh theo ngày/cặp coin
 │   │   └── funding_liquid/             # (Funding rates & Thanh lý)
 │   │
@@ -194,7 +196,9 @@ KAIROS v3/
 │   │   │       └── signal_schema.py    # Schema cho Signal Events
 │   │   └── kiem_soat_luu_luong/        # (BACKPRESSURE CONTROL) Tránh quá tải RAM
 │   │       ├── drop_policy/            # Bỏ qua Tick data cũ nếu nghẽn
+│   │       │   └── shedder.py          # O(1) Head Drop & Hysteresis Pressure Engine
 │   │       └── priority_channel/       # Luôn ưu tiên Fill Event và Risk Alert
+│   │           └── channel_manager.py  # SPSC Multi-Queue & Hard Fairness Drain
 │   │
 │   ├── bo_nho_chung/                   # (Shared Memory)
 │   └── dong_ho_thoi_gian/              # (Clock)
