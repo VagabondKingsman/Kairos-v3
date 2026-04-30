@@ -1280,7 +1280,7 @@ if _tv_mult < 1.0:                # DEGRADED: PTP crash
 
 | Thành phần | Công nghệ | Vai trò |
 |-----------|-----------|---------|
-| Ngôn ngữ chính | Python 3.11+ | Core logic, async I/O |
+| Ngôn ngữ chính | Python 3.13+ | Core logic, async I/O |
 | Messaging | ZeroMQ (pyzmq) | Event Bus PUB/SUB, inproc/tcp |
 | Serialization | orjson | JSON serialize ~10× nhanh hơn stdlib |
 | Numerical | NumPy, ctypes | Structured arrays, memmove, zero-alloc |
