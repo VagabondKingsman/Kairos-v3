@@ -9,17 +9,22 @@ KAIROS v3/
 ├── Makefile                            # Phím tắt thao tác (make train, make live)
 ├── pyproject.toml                      # Quản lý thư viện Python (Poetry/Ruff)
 ├── README.md                           # Bạn đang đọc file này
-├── kiem_tra_rest_api.py                # Test runner REST layer (--unit / --live)
+├── scratch_find_py.py                  # Script tiện ích tìm kiếm file Python
 │
 # ==========================================
 # ⚙️ 1. CẤU HÌNH & MÔI TRƯỜNG (CONFIG & RUNTIME)
 # ==========================================
 ├── cau_hinh/
 │   ├── adapter_loader.py               # Tự động nạp Adapter cấu hình
-│   ├── giao_dich.yaml                  # Thông số vốn, đòn bẩy
-│   ├── rui_ro.yaml                     # Giới hạn Drawdown, Max Position
-│   ├── san_giao_dich.yaml              # Cấu hình API, rate limit các sàn
-│   └── chien_luoc.yaml                 # Trọng số phân bổ cho các Alpha
+│   ├── chien_luoc.yaml                 # Trọng số phân bổ cho các Alpha
+│   ├── giam_sat/                       # (Configs cho các module Giám sát)
+│   │   ├── canh_bao.yaml
+│   │   └── chi_so_hieu_suat.yaml
+│   ├── ket_noi/                        # (Configs kết nối sàn)
+│   │   ├── exchanges.yaml
+│   │   └── symbol_master.yaml
+│   └── quan_tri_rui_ro/                # (Configs quản trị rủi ro)
+│       └── risk_config.yaml
 │
 ├── moi_truong_chay/                    # (RUNTIME ISOLATION) Tách biệt tuyệt đối
 │   ├── live/                           # Chạy tiền thật (Event bus & DB riêng biệt)
@@ -199,8 +204,13 @@ KAIROS v3/
 # 📊 9. GIÁM SÁT & KIỂM THỬ (MONITORING & TESTING)
 # ==========================================
 ├── giam_sat/
-│   ├── chi_so_hieu_suat/               # (Metrics) RAM, CPU
-│   ├── canh_bao/                       # (Alerts)
+│   ├── chi_so_hieu_suat/               # (Metrics) Đo lường RAM, CPU, Context Switches
+│   │   ├── collector.py                # Thu thập thông số (psutil)
+│   │   └── reporter.py                 # Xuất dữ liệu Metrics qua ZMQ
+│   ├── canh_bao/                       # (Alerts) Hệ thống cảnh báo tự động
+│   │   ├── alert_manager.py            # Orchestrator quản lý Alert và Deduplication
+│   │   ├── alert_rules.py              # Rule Engine đánh giá cảnh báo
+│   │   └── telegram_sender.py          # Gửi tin nhắn qua Telegram
 │   └── theo_doi_do_tre/                # Đo lường độ trễ toàn hệ thống
 │       ├── histogram.py                # Tính toán và phân bổ thống kê độ trễ
 │       ├── reporter.py                 # Xuất báo cáo và log
