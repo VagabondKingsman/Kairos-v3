@@ -1211,7 +1211,7 @@ ctypes.memmove(
 
 ```
                     ┌─ commit_raw() PASS ──► Ghi vào Live Store ✓
-Snapshot → Draft ──►│
+Snapshot → Draft ─►│
                     └─ commit_raw() FAIL ──► Rollback SymbolState từ Scratch ✓
 ```
 
