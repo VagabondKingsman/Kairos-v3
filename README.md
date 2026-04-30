@@ -1,7 +1,17 @@
-# 🚀 Kairos Quant Enterprise v3
+<div align="center">
+ 
+<img width="224" height="224" alt="image" src="https://github.com/user-attachments/assets/5a1b5bcf-e6bb-4d92-a4a7-0c55697ba30e" />
 
-> Hệ thống giao dịch định lượng (Quant Trading) tự động hóa toàn diện, với kiến trúc độ trễ cực thấp (Ultra-Low Latency) lấy cảm hứng từ các tiêu chuẩn HFT (HFT-Inspired).
+# KAIROS v3.0
+### **Hệ thống giao dịch định lượng (Quant Trading) tự động hóa toàn diện, với kiến trúc độ trễ cực thấp (Ultra-Low Latency) lấy cảm hứng từ các tiêu chuẩn HFT (HFT-Inspired)**
 
+[![Python](https://img.shields.io/badge/Python-3.13+-blue?style=for-the-badge&logo=python)](https://www.python.org/)
+[![Market](https://img.shields.io/badge/Market-Crypto-orange?style=for-the-badge)](https://www.binance.com/)
+[![License](https://img.shields.io/badge/License-MIT-green?style=for-the-badge)](https://opensource.org/licenses/MIT)
+
+`Python` • `ETL Pipeline` • `Backtesting` • `Quant Analysis`
+
+<div align="left">
 ---
 
 ## 📑 Mục Lục
