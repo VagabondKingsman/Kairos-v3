@@ -142,7 +142,7 @@ KAIROS v3/
 │   ├── thu_thap/                       # (Collector)
 │   │   ├── websocket/                  # Real-time streaming
 │   │   │   ├── binance_ws.py           # BinanceGateway
-│   │   │   ├── okx_ws.py              # OkxGateway
+│   │   │   ├── okx_ws.py               # OkxGateway
 │   │   │   └── bybit_ws.py             # BybitGateway
 │   │   └── rest_api/                   # Polling định kỳ
 │   │       ├── base_rest.py            # BaseRestPoller
@@ -206,7 +206,7 @@ KAIROS v3/
 │   │   ├── ml_signal_engine.py
 │   │   └── mock_onnx_generator.py
 │   ├── quan_ly_danh_muc/               # (Portfolio Engine)
-│   │   └── ke_toan_pnl/               # Accounting: Realized/Unrealized PnL
+│   │   └── ke_toan_pnl/                # Accounting: Realized/Unrealized PnL
 │   ├── danh_ba_chien_luoc/             # (STRATEGY REGISTRY)
 │   ├── quan_ly_lenh/                   # (OMS) Order Management
 │   ├── dong_co_thuc_thi/               # (EMS) Execution Management
