@@ -1330,6 +1330,6 @@ if _tv_mult < 1.0:                # DEGRADED: PTP crash
 
 ---
 
-> **Kairos Quant Enterprise v3** — *"Thời điểm quyết định"* (Καιρός)
+> **Kairos v3.0** — *"Thời điểm quyết định"* (Καιρός)
 >
 > Mọi microsecond đều có giá trị. Mọi dòng code đều có mục đích.
