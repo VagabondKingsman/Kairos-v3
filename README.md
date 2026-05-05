@@ -95,24 +95,11 @@ KAIROS v3/
 # ⚙️ 1. CẤU HÌNH & MÔI TRƯỜNG (CONFIG & RUNTIME)
 # ==========================================
 ├── cau_hinh/
-│   ├── adapter_loader.py               # Tự động nạp Adapter cấu hình
-│   ├── chien_luoc.yaml                 # Trọng số phân bổ cho các Alpha
-│   ├── giam_sat/                       # (Configs cho các module Giám sát)
-│   │   ├── canh_bao.yaml
-│   │   └── chi_so_hieu_suat.yaml
-│   ├── ket_noi/                        # (Configs kết nối sàn)
-│   │   ├── exchanges.yaml
-│   │   └── symbol_master.yaml
-│   ├── ha_tang/                        # (Configs cho tầng Infrastructure)
-│   │   └── flow_config.yaml            # Cấu hình Backpressure & Quotas
-│   ├── quan_tri_rui_ro/                # (Configs quản trị rủi ro)
-│   │   └── risk_config.yaml
-│   └── thuc_thi/                       # [NEW] (Configs tầng Execution)
-│       ├── oms_config.yaml             # OrderBook, WAL rotation, Reconciliation
-│       ├── pnl_config.yaml             # PnL Accounting: scale, checkpoint, integrity
-│       ├── position_sync_config.yaml   # Drift detection, healing, clock skew
-│       ├── retry_config.yaml           # Rate Limiter, Circuit Breaker, Retry Policy
-│       └── session_config.yaml         # Daily session rotation, Sharpe, equity guard
+│   ├── adapter_loader.py               # Factory nạp Exchange Adapters từ .env + universe.yaml
+│   ├── config_loader.py                # Pydantic typed loaders cho 3 file YAML
+│   ├── universe.yaml                   # Exchange adapters (timeout, rate) + Symbol master
+│   ├── trading.yaml                    # Risk, OMS, PnL, Position Sync, Session, Strategy
+│   └── infra.yaml                      # Flow Control, Execution Protection, Alerting, Observability
 │
 ├── moi_truong_chay/                    # (RUNTIME ISOLATION) Tách biệt tuyệt đối
 │   ├── live/                           # Chạy tiền thật
@@ -329,10 +316,9 @@ Module điều phối cấp cao nhất, kết hợp giữa quản lý tham số 
 
 Tách bạch hoàn toàn logic và tham số. Không hardcode bất kỳ giá trị nào trong source code:
 
-* `flow_config.yaml` — Định nghĩa giới hạn phần cứng cho hệ thống Backpressure: CRITICAL queue max `100k` items, budget drain cycle `200µs`, hệ số làm mượt EWMA cho Adaptive Shedder.
-* `symbol_master.yaml` — Ánh xạ cặp tiền thành số nguyên (`symbol_id`) để truy xuất mảng O(1) trong hot-path. Định nghĩa `tick_size`, `lot_size`, `qty_step` tối ưu cho từng cặp coin.
-* `risk_config.yaml` — Quản lý rate-limit API (Token Bucket), Circuit Breaker (ngắt mạch khi chạm Max Drawdown), `max_daily_loss_usdt`, `max_drawdown_pct`, `duplicate_cooldown_ms`.
-* `exchanges.yaml` — Endpoint REST/WS cho Binance, OKX, Bybit. Tích hợp fallback tự động.
+* `universe.yaml` — Exchange adapters (timeout, Token Bucket rate/capacity cho Binance/Bybit/OKX) + Symbol master: ánh xạ cặp tiền thành số nguyên `symbol_id` để truy xuất mảng O(1) trong hot-path, định nghĩa `qty_step`, `price_step`, `max_pos_usdt`.
+* `trading.yaml` — Toàn bộ tham số giao dịch: Risk Gate (`max_daily_loss_usdt`, `max_drawdown_pct`), OMS (`segment_rotation_count: 60000`, `archive_max_size: 50000`), PnL (`scale_factor: 1e8`, `checkpoint_every: 1000`), Position Sync, Funding, Session rotation, Strategy (`vector_size`).
+* `infra.yaml` — Hạ tầng vận hành: Flow Control (CRITICAL queue `100k`, drain budget `200µs`, EWMA Adaptive Shedder), Execution Protection (Rate Limiter, Circuit Breaker, Retry — dưới key `execution:`), Alerting Telegram + rules (dưới key `alerting:`), System Metrics observability (dưới key `observability:`).
 * `adapter_loader.py` — Factory tự động nạp cấu hình kết hợp biến môi trường `.env`:
 
 ```python
@@ -1051,17 +1037,15 @@ Tốt hơn exponential backoff vì dàn đều tải, tránh synchronized retry 
 
 **Intent State Machine**: Mỗi lệnh đi qua lifecycle `PENDING → SENT → ACKNOWLEDGED / UNCONFIRMED → RESOLVED`. Intent stale (>300s chưa RESOLVED) bị evict vào `deque(maxlen=10,000)` — chống OOM.
 
-#### Execution Configuration Hierarchy (`cau_hinh/thuc_thi/`)
+#### Execution Configuration (`cau_hinh/`)
 
-Toàn bộ runtime parameters của Execution Core được tách thành 5 file YAML độc lập, cho phép thay đổi hành vi mà không cần sửa code:
+Toàn bộ runtime parameters được hợp nhất vào 3 file YAML phẳng, cho phép thay đổi hành vi mà không cần sửa code:
 
-| File | Scope | Tham số chính |
-|------|-------|--------------|
-| `oms_config.yaml` | OrderBook + Reconciliation | `segment_rotation_count: 60000`, `archive_max_size: 50000`, `reconciliation.interval_s: 60` |
-| `pnl_config.yaml` | PnL Accounting | `scale_factor: 100000000`, `checkpoint_every: 1000`, `max_drawdown_pct: 0.30` |
-| `session_config.yaml` | Daily Session | `rotation_hour_utc: 0`, `trailing_stats_days: 30`, `risk_free_rate: 0.04` |
-| `position_sync_config.yaml` | Drift Detection | `size_abs_tol: 0.0001`, `consecutive_violations_to_kill: 3`, `clock_skew.warning_threshold_ms: 500` |
-| `retry_config.yaml` | Protection Stack | `place.rate: 10/s`, `circuit_breaker.place.threshold: 30`, `retry.max_retries: 3` |
+| File | Scope | Top-level keys |
+|------|-------|---------------|
+| `trading.yaml` | Risk, OMS, PnL, Position Sync, Session, Strategy | `risk`, `order_book`, `wal`, `reconciliation`, `backpressure`, `cancel_all`, `pnl`, `position_sync`, `funding`, `persistence`, `session`, `strategy` |
+| `infra.yaml` | Flow Control, Execution Protection, Alerting, Observability | `flow_control`, `execution` (`rate_limiter`, `circuit_breaker`, `retry`), `alerting`, `observability` |
+| `universe.yaml` | Exchange adapters, Symbol master | `exchanges`, `symbols` |
 
 ---
 
@@ -1633,7 +1617,7 @@ if _tv_mult < 1.0:                # DEGRADED: PTP crash
 
 1. **AI & Model Development** — Triển khai ONNX inference engine trong `hoc_may/suy_luan/`. Tích hợp Transformer-based Alpha model.
 2. **Replay Engine Validation** — Validate `nghien_cuu/dong_co_phat_lai/` với SessionManager + DurableWAL mới để đảm bảo simulation-to-reality parity.
-3. **Chaos Testing** — Chạy `test_chaos_risk.py` với cấu hình mới (`retry_config.yaml`, `position_sync_config.yaml`) để verify Circuit Breaker + Watchdog + Kill-Switch xử lý đúng khi inject failures.
+3. **Chaos Testing** — Chạy `test_chaos_risk.py` với cấu hình mới (`infra.yaml` → `execution:`, `trading.yaml` → `position_sync:`) để verify Circuit Breaker + Watchdog + Kill-Switch xử lý đúng khi inject failures.
 4. **Grafana Integration** — Kết nối `SystemMetricsReporter`, `LatencyReporter`, `ExecutionWrapper.snapshot()`, và `PnLAggregator.dump_crash_state()` vào Grafana qua Prometheus exporter.
 5. **Multi-Strategy Execution** — Kích hoạt `danh_ba_chien_luoc/` để chạy nhiều Alpha strategies song song với vốn phân bổ động.
 6. **MLOps Integration** — Tích hợp ML Monitoring (`sai_lech_dac_trung/`, `sai_lech_du_doan/`) với PnL Accounting để auto-disable model khi prediction drift vượt ngưỡng.
