@@ -105,8 +105,14 @@ KAIROS v3/
 │   │   └── symbol_master.yaml
 │   ├── ha_tang/                        # (Configs cho tầng Infrastructure)
 │   │   └── flow_config.yaml            # Cấu hình Backpressure & Quotas
-│   └── quan_tri_rui_ro/                # (Configs quản trị rủi ro)
-│       └── risk_config.yaml
+│   ├── quan_tri_rui_ro/                # (Configs quản trị rủi ro)
+│   │   └── risk_config.yaml
+│   └── thuc_thi/                       # [NEW] (Configs tầng Execution)
+│       ├── oms_config.yaml             # OrderBook, WAL rotation, Reconciliation
+│       ├── pnl_config.yaml             # PnL Accounting: scale, checkpoint, integrity
+│       ├── position_sync_config.yaml   # Drift detection, healing, clock skew
+│       ├── retry_config.yaml           # Rate Limiter, Circuit Breaker, Retry Policy
+│       └── session_config.yaml         # Daily session rotation, Sharpe, equity guard
 │
 ├── moi_truong_chay/                    # (RUNTIME ISOLATION) Tách biệt tuyệt đối
 │   ├── live/                           # Chạy tiền thật
@@ -201,14 +207,28 @@ KAIROS v3/
 │   │   ├── binance_adapter.py
 │   │   ├── bybit_adapter.py
 │   │   ├── okx_adapter.py
-│   │   └── chien_luoc_thu_lai/         # Rate Limit + Circuit Breaker
+│   │   └── chien_luoc_thu_lai/         # [NEW] Smart Retry + Protection Stack
+│   │       ├── circuit_breaker.py      # Weighted CB: CLOSED→OPEN→HALF_OPEN
+│   │       ├── execution_wrapper.py    # Intent Lifecycle + Integrated Protection
+│   │       ├── rate_limiter.py         # Adaptive Token Bucket + EWMA Latency
+│   │       └── retry_policy.py         # Decorrelated Jitter + Deadline-Aware
 │   ├── dong_co_tin_hieu/               # (Signal Engine)
 │   │   ├── ml_signal_engine.py
 │   │   └── mock_onnx_generator.py
 │   ├── quan_ly_danh_muc/               # (Portfolio Engine)
-│   │   └── ke_toan_pnl/                # Accounting: Realized/Unrealized PnL
+│   │   ├── funding_collector.py        # [NEW] Periodic Funding Collection + NDJSON Dedup
+│   │   ├── position_sync.py            # [NEW] Startup Sync + Drift Detection + Healing
+│   │   ├── session_manager.py          # [NEW] Daily P&L Session Rotation + Archive
+│   │   └── ke_toan_pnl/                # [NEW] Accounting: Realized/Unrealized PnL
+│   │       ├── pnl_aggregator.py       # Root PnL Orchestrator (719 dòng)
+│   │       ├── pnl_tracker.py          # Integer-Scaled Realized PnL + OCC
+│   │       ├── fee_ledger.py           # Trade Fees + Funding Payments
+│   │       └── mark_to_market.py       # Live Mark Price + Unrealized PnL
 │   ├── danh_ba_chien_luoc/             # (STRATEGY REGISTRY)
-│   ├── quan_ly_lenh/                   # (OMS) Order Management
+│   ├── quan_ly_lenh/                   # [NEW] (OMS) Order Management System
+│   │   ├── order_book.py               # In-Memory Sổ Lệnh + Per-Symbol Lock (757 dòng)
+│   │   ├── reconciler.py               # Exchange Reconciliation + Cancel-All
+│   │   └── oms_serializer.py           # Binary WAL Payload Codec (32B)
 │   ├── dong_co_thuc_thi/               # (EMS) Execution Management
 │   │   ├── ems.py
 │   │   └── execution_risk_engine.py
@@ -778,6 +798,271 @@ class WALEntryType(IntEnum):
 3. **Đặt con trỏ**: `seq_next = last_valid_entry.seq_id + 1` — bắt đầu ghi từ sau entry hợp lệ cuối cùng
 4. **Rebuild state**: Replay các entry hợp lệ để khôi phục lại trạng thái in-memory (vị thế, lệnh đang mở, PnL)
 
+#### Order Management System (`quan_ly_lenh/`) — 1,292 dòng
+
+Hệ thống Quản lý Lệnh (OMS) là sổ cái trung tâm: mọi lệnh giao dịch phải được đăng ký, theo dõi, và đóng sổ tại đây trước khi rời khỏi hệ thống. OMS gồm 3 thành phần:
+
+* **`order_book.py` (757 dòng)**: Sổ lệnh in-memory với **Per-Symbol Locking**. Mỗi symbol (BTC, ETH, ...) có lock riêng — lệnh BTC không block lệnh ETH. Tất cả state transitions được ghi WAL **TRƯỚC** khi method return, đảm bảo crash-recovery hoàn toàn.
+* **`reconciler.py` (400 dòng)**: Chạy định kỳ 60s, đối chiếu trạng thái OMS local với sàn. Phát hiện "missed fills" (lệnh đã khớp trên sàn nhưng OMS chưa biết do mất kết nối) và inject ngược vào pipeline.
+* **`oms_serializer.py` (135 dòng)**: Binary codec cho WAL payload — pack/unpack `OrderEntry` vào đúng 32 bytes bằng `ctypes.LittleEndianStructure`.
+
+**Durability Contract**: Mọi lệnh được ghi WAL theo protocol 2-phase:
+1. `ORDER_SENT`: Payload = `client_order_id[:32]` (identity record), `flags = 0`.
+2. `ORDER_FILLED / CANCELLED / REJECTED`: Payload = `_OrderPayload` 32 bytes, `flags = wal_seq_id` của entry ORDER_SENT tương ứng — liên kết update về gốc.
+
+**Backpressure Gates**: OrderBook từ chối lệnh mới khi hệ thống quá tải, kiểm tra **trước khi acquire lock** (zero contention):
+
+```python
+# thuc_thi_lenh/quan_ly_lenh/order_book.py
+def _gate_reject_reason(self) -> Optional[str]:
+    if self._time_validator.capital_multiplier() == 0.0:
+        return "capital_zero"          # TimeValidator đã cắt vốn
+    if self._cb_registry.get_state("place") == CBState.OPEN:
+        return "circuit_open"          # Circuit breaker đang mở
+    util = self._wal.utilization()
+    if util >= 0.95:                   # WAL đạt 95% capacity
+        return f"wal_full:{util:.0%}"  # Bảo lưu headroom cho updates
+    return None
+```
+
+**Object Pool** (`OrderPool`): Pre-allocate 2,048 `OrderEntry` instances khi khởi tạo. Hot-path `register()` lấy từ pool thay vì `__init__` mới — giảm ~3× RAM per instance (nhờ `slots=True`) và loại bỏ hoàn toàn GC pressure. Pool cạn → fallback sang fresh allocation (không panic, không block).
+
+**Lock Ordering** (bất biến chống deadlock): `_sym_locks[symbol]` **TRƯỚC** → `_wal_lock` **SAU**. Không bao giờ giữ `_wal_lock` mà không giữ symbol lock trước. Hold time dưới lock: chỉ dict ops + ctypes encode (<1µs).
+
+**WAL Replay** khi startup (single-threaded, trước concurrent access):
+1. **Pass 1** (`ORDER_SENT`): Xây dựng `seq_to_coid` map và stub `OrderEntry`.
+2. **Pass 2** (update entries): Dùng `entry.flags` → lookup coid → apply `_OrderPayload`.
+3. **Partition**: Non-terminal → `_active` dict. Terminal → `_archive` deque(maxlen=50,000).
+4. **Verification**: FILLED orders phải có `filled_qty > 0`, qty không âm — fail-stop nếu vi phạm.
+
+**WAL Rotation**: Khi `entry_count >= segment_rotation_count` (mặc định 60,000), `rotate_wal()` snapshot toàn bộ active orders vào WAL mới rồi atomic swap reference. Old WAL được close nhưng không xóa — caller chịu trách nhiệm archive.
+
+#### PnL Accounting Engine (`ke_toan_pnl/`) — 1,521 dòng
+
+Bài toán tính lãi/lỗ trong giao dịch crypto tưởng chừng đơn giản nhưng ẩn chứa 3 cạm bẫy chết người: (1) **Floating-point error** — `0.1 + 0.2 != 0.3` trong IEEE 754, tích lũy qua hàng nghìn giao dịch sẽ sai lệch hàng trăm USD; (2) **Concurrent mutation** — Thread 1 đọc PnL trong khi Thread 2 đang cập nhật → torn read; (3) **Crash mid-update** — mất điện giữa lúc cập nhật fee → PnL và fee không khớp vĩnh viễn.
+
+Kairos giải quyết cả 3 bằng kiến trúc **Integer-Scaled Arithmetic + WAL-Backed Checkpoint + OCC (Optimistic Concurrency Control)**:
+
+* **`pnl_aggregator.py` (719 dòng)**: Root orchestrator — điều phối `RealizedPnLTracker`, `FeeLedger`, và `MarkToMarket`. Sở hữu WAL checkpoint protocol, authority reconciliation, và crash-forensics dump.
+* **`pnl_tracker.py` (383 dòng)**: Tính realized PnL bằng thuật toán FIFO (First-In-First-Out). Mỗi fill được ghi WAL `TRADE_RECORD` 32 bytes.
+* **`fee_ledger.py` (299 dòng)**: Ghi nhận trade fees và funding payments. Phát hiện anomaly (fee > 1% notional → cảnh báo).
+* **`mark_to_market.py` (120 dòng)**: Theo dõi mark price real-time và tính unrealized PnL.
+
+**Integer Arithmetic** — Tại sao không dùng `float`?
+
+Mọi giá trị tài chính được nhân với `scale_factor = 1e8` (100,000,000) và lưu dưới dạng `int64`. Phép toán integer trong Python là chính xác tuyệt đối — không có epsilon error. Khi cần hiển thị, chia ngược cho `scale_factor`:
+
+```python
+# Ví dụ: 0.00012345 BTC → 12345 (scaled)
+# Phép cộng: 12345 + 67890 = 80235 (chính xác tuyệt đối)
+# Nếu dùng float: 0.00012345 + 0.00067890 = 0.0008023499999... (sai!)
+```
+
+**OCC (Optimistic Concurrency Control)**: `RealizedPnLTracker` sử dụng OCC thay vì global lock. Mỗi fill được xử lý qua vòng lặp retry tối đa 5 lần:
+
+```python
+# thuc_thi_lenh/quan_ly_danh_muc/ke_toan_pnl/pnl_tracker.py
+for _attempt in range(MAX_OCC_RETRIES):
+    ver = self._scale_ref.version    # Snapshot version
+    sf  = self._scale_ref.factor
+    qty_s   = round(fill_qty * sf)   # Scale to integer
+    price_s = round(avg_price * sf)
+
+    with sym_lock:
+        if self._scale_ref.version != ver:
+            continue   # Scale đã thay đổi → retry
+        gross_pnl_s = _apply_fill(state, side, qty_s, price_s, sf)
+        # WAL append dưới sym_lock → wal_lock (lock ordering)
+        with self._wal_lock:
+            self._wal.append(TRADE_RECORD, payload, flags=fill_ts_ns & 0xFFFF_FFFF)
+        break
+else:
+    raise ScaleVersionConflictError(f"OCC starvation after 5 retries")
+```
+
+**Dual-Key Fill Idempotency**: Mỗi fill được deduplicate bằng 2 key: `(client_order_id, cum_qty_scaled)` + `fill_ts_ns`. OrderedDict FIFO eviction tại 10,000 entries. Sau WAL replay, `seed_idempotency_cache()` rebuild cache từ OMS OrderBook — ngăn WebSocket reconnect gửi lại fill cũ gây double PnL.
+
+**WAL Checkpoint Protocol** (★FIX-1+7) — Atomic dual-entry:
+
+```
+CheckpointA (type=7):  txn_nonce(4B) + total_realized(8B) + total_fees(8B) + net_equity(8B)
+CheckpointB (type=70): txn_nonce(4B) + peak_equity(8B) + max_drawdown(8B) + total_funding(8B)
+                       flags = A.seq_id (liên kết B → A)
+```
+
+3-layer replay verification: `B.flags == A.seq_id` ∧ `B.txn_nonce == A.txn_nonce` ∧ CRC32 per entry. Nếu bất kỳ layer nào fail → checkpoint bị bỏ qua, replay từ đầu.
+
+**Scale Downgrade** (★FIX-2): Khi `int64` gần tràn (do scale_factor quá lớn), hệ thống thực hiện **epoch barrier** dưới `_global_lock`: WAL `SCALE_CHANGE` → `fsync()` → rescale tất cả sub-modules → `version++`. OCC trong các thread khác sẽ phát hiện version change và retry.
+
+**Integrity Invariants** (★FIX-6) — 3 bất biến được kiểm tra định kỳ:
+
+| # | Invariant | Hành vi khi vi phạm |
+|---|-----------|---------------------|
+| 1 | `net_pnl == realized - fees - funding` | CRITICAL log + crash dump |
+| 2 | `equity >= -max_drawdown_threshold` | CRITICAL log + crash dump |
+| 3 | `unrealized == mark_to_market sum` | WARNING only (cross-module) |
+
+**Authority Reconciliation** (★FIX-5): Cho phép exchange override PnL local — nhưng **CHỈ AN TOÀN khi `position.size == 0`**. Nếu vị thế đang mở, override bị **DEFERRED** với `DIVERGENCE_WARNING` để tránh equity corruption.
+
+#### Session Manager (`session_manager.py`) — 662 dòng
+
+Bài toán: Mỗi ngày giao dịch cần được "đóng sổ" — tính tổng lãi/lỗ, Sharpe ratio, reset bộ đếm, và lưu trữ kết quả vào kho dữ liệu lịch sử. Nếu quá trình đóng sổ bị gián đoạn (mất điện, crash), dữ liệu phải không bị mất hoặc trùng lặp.
+
+SessionManager quản lý vòng đời phiên giao dịch hàng ngày với **atomic rotation**, **crash-resilient writes**, và **hot/cold storage tiering**:
+
+**Rotate Session** — Quy trình đóng sổ ngày:
+
+```python
+# thuc_thi_lenh/quan_ly_danh_muc/session_manager.py
+def rotate_session(self) -> dict:
+    with self._global_lock:
+        # 1. Snapshot PnL state TRƯỚC khi reset
+        dump = self._pnl_agg.snapshot()
+        old_session = self._pnl_agg.reset_session()
+
+        # 2. Tính Sharpe Ratio = mean(returns) / std(returns)
+        sharpe = self._calculate_sharpe(old_session)
+
+        # 3. Kiểm tra equity guardrail
+        if dump["net_equity"] < self._equity_floor:
+            logger.critical("EQUITY_FLOOR_BREACH equity=%.2f floor=%.2f",
+                          dump["net_equity"], self._equity_floor)
+
+        # 4. Ghi vào NDJSON archive (crash-safe)
+        record = {
+            "session_id": self._session_counter,
+            "start_ns": old_session.session_start_ns,
+            "end_ns": time.time_ns(),
+            "realized_pnl": dump["total_realized_pnl"],
+            "sharpe_ratio": sharpe,
+            ...
+        }
+        self._append_verified(record)
+        self._session_counter += 1
+    return record
+```
+
+**Crash-Resilient Append** — Mỗi record được ghi vào file NDJSON (1 JSON object / dòng) bằng quy trình đảm bảo durability:
+
+1. **`portalocker.lock()`**: Khóa file cross-platform (Windows `LockFileEx` / POSIX `fcntl.flock`) — ngăn 2 process ghi đồng thời.
+2. **`os.write()` + `os.fsync()`**: Ghi trực tiếp qua file descriptor (bypass Python buffer) rồi flush xuống đĩa vật lý.
+3. **Verified write loop**: Sau khi ghi, đọc lại dòng cuối và so sánh — nếu không khớp → retry tối đa 3 lần.
+
+```python
+# Verified write — đọc lại sau khi ghi để xác nhận
+for attempt in range(self._max_write_retries):
+    fd = os.open(str(self._archive_path), os.O_WRONLY | os.O_APPEND | os.O_CREAT)
+    try:
+        os.write(fd, line_bytes)
+        os.fsync(fd)                    # Flush xuống đĩa vật lý
+    finally:
+        os.close(fd)
+
+    # Verify: đọc lại dòng cuối → so sánh
+    last_line = self._read_last_line()
+    if last_line.strip() == line.strip():
+        return   # ✓ Ghi thành công
+    logger.warning("write_verify_failed attempt=%d", attempt)
+```
+
+**O(1) Tail Read** — Tại sao không đọc toàn bộ file?
+
+Khi khởi động, SessionManager cần đọc session cuối để khôi phục equity. File archive có thể chứa hàng nghìn sessions. Thay vì đọc toàn bộ (O(n)), hệ thống seek đến cuối file và đọc ngược để tìm ký tự `\n` cuối cùng — chỉ parse 1 dòng JSON:
+
+```python
+def _read_last_line(self) -> str:
+    with open(self._archive_path, "rb") as f:
+        f.seek(0, 2)              # Seek đến EOF
+        pos = f.tell()
+        buf = bytearray()
+        while pos > 0:
+            pos -= 1
+            f.seek(pos)
+            char = f.read(1)
+            if char == b'\n' and buf:
+                break             # Tìm thấy \n → dòng cuối hoàn chỉnh
+            buf.append(char[0])
+    return bytes(buf[::-1]).decode("utf-8")
+```
+
+**NDJSON → Parquet Compaction**: Sau mỗi `compaction_interval` sessions, file NDJSON (hot data) được compact thành Parquet với Snappy compression (cold storage) bằng Polars. Parquet cho phép query phân tích (Sharpe trung bình, drawdown xu hướng) với tốc độ columnar, trong khi NDJSON giữ vai trò append-only WAL cho durability.
+
+**Truncate Corrupt Tail**: Nếu máy crash giữa lúc ghi NDJSON, dòng cuối có thể bị cắt ngang (partial JSON). Khi startup, `_truncate_corrupt_last_line()` phát hiện và loại bỏ dòng lỗi — chỉ mất tối đa 1 session record (acceptable loss so với corruption toàn file).
+
+#### Position Synchronizer (`position_sync.py`) — 441 dòng
+
+PositionSynchronizer đảm bảo rằng trạng thái vị thế trong Kairos luôn khớp với thực tế trên sàn giao dịch. Nó hoạt động theo 3 chế độ:
+
+1. **Startup Full Sync**: Chạy **MỘT LẦN** sau WAL replay, TRƯỚC khi accept fills. Exchange = authority cho mọi drift → force-overwrite `KairosState`.
+2. **Periodic Drift Detection** (60s): So sánh local vs exchange. **CHỈ LOG, KHÔNG auto-fix**. 3 violations liên tiếp → **kill-switch** (dừng toàn bộ giao dịch).
+3. **Priority Self-Healing Queue**: External callers push symbols qua `request_heal()`. Worker pop theo priority (notional cao nhất trước) và re-query exchange tại max 2 REST/s.
+
+**Clock Skew EMA**: Mỗi response từ exchange mang theo timestamp. Hệ thống tính EMA của `(local_recv_ms - exchange_ts_ms)` — nếu skew > 500ms → WARNING, > 2000ms → CRITICAL. Phát hiện sớm network issues hoặc system clock drift.
+
+**Kill-Switch Cooldown**: Trước khi trigger kill-switch, kiểm tra `system.KILLED` file mtime — nếu đã có kill trong `kill_cooldown_s` giây gần đây → suppress để tránh flapping.
+
+#### Funding Collector (`funding_collector.py`) — 266 dòng
+
+FundingCollector thu thập định kỳ các khoản thanh toán funding rate từ tất cả sàn giao dịch. Đặc biệt quan trọng: **Sign Normalization (★FIX-10)** — Binance/Bybit trả `positive = received` (đảo dấu so với Kairos), trong khi OKX trả `positive = paid` (giữ nguyên). Nếu không chuẩn hóa, PnL sẽ sai hoàn toàn.
+
+**NDJSON Dedup WAL** (`funding_dedup.jsonl`): Mỗi funding payment được hash và lưu vào LRU OrderedDict (50,000 entries). File NDJSON đóng vai trò WAL — crash mid-write chỉ corrupt dòng cuối. Daily compaction prune entries cũ hơn `dedup_keep_days` bằng atomic `write → fsync → os.replace`.
+
+#### Protection Stack (`chien_luoc_thu_lai/`) — 1,175 dòng
+
+Khi giao dịch với sàn qua REST API, 4 loại sự cố có thể xảy ra bất cứ lúc nào: (1) **Rate limit** — sàn trả HTTP 429 vì quá nhiều request; (2) **Server error** — HTTP 5xx do sàn quá tải; (3) **Timeout** — request biến mất, không biết lệnh đã vào matching engine chưa; (4) **Connection reset** — mất kết nối giữa chừng. Protection Stack xử lý tất cả 4 trường hợp qua 3 tầng bảo vệ xếp chồng:
+
+**Tầng 1: Adaptive Rate Limiter** (`rate_limiter.py`) — Token Bucket per-endpoint. PLACE, CANCEL, và INFO có bucket **hoàn toàn độc lập** — khi PLACE cạn token (thị trường sôi động), CANCEL vẫn đi được (quan trọng khi cần emergency cancel). Rate tự điều chỉnh qua EWMA latency tracking:
+
+```
+R_new = R_old × (target_latency / ewma_latency)  — proportional throttle
+```
+
+Death Spiral Prevention: Nếu không có request trong `recovery_window_s` (30s), EWMA latency bị halve dần và rate recover +10% base_rate mỗi chu kỳ — tránh tình trạng rate bị giảm vĩnh viễn.
+
+**Tầng 2: Weighted Circuit Breaker** (`circuit_breaker.py`) — State machine 3 trạng thái:
+
+```
+CLOSED ──[weight_accum ≥ threshold]──► OPEN ──[recovery_timeout]──► HALF_OPEN
+                                                                        │
+              ◄──────────[probe success]──────────────────────────────────┘
+              ──────────[probe failure]──────────────────────────────► OPEN
+```
+
+Error weights cộng dồn: `timeout=1`, `ratelimit=3`, `server_error=5`. HALF_OPEN chỉ cho phép **đúng 1 probe request** tại một thời điểm (ngăn Thundering Herd). Alert debouncing: CRITICAL log tối đa 1 lần / `alert_cooldown_ms` / breaker.
+
+**Tầng 3: Smart Retry Policy** (`retry_policy.py`) — Decorrelated Jitter (AWS best practice):
+
+```
+delay_i = min(max_delay, uniform(base_delay, prev_delay × 3))
+```
+
+Tốt hơn exponential backoff vì dàn đều tải, tránh synchronized retry storms. **Deadline-aware**: nếu `elapsed + next_delay > deadline_ms` → abort sớm. Quy tắc quan trọng nhất: **PLACE + TIMEOUT = UnconfirmedOrder** — lệnh có thể đã vào matching engine, **TUYỆT ĐỐI KHÔNG retry** (Ghost Position risk). EMS phải reconcile.
+
+**`ExecutionWrapper`** (`execution_wrapper.py`) — Điểm tích hợp duy nhất, gói cả 3 tầng vào 1 method call:
+
+```python
+# Trước: adapter._execute_with_retry(...)
+# Sau:   wrapper.protected_call(coro_factory, EndpointKind.PLACE, ...)
+#
+# Luồng nội bộ:
+#   RateLimiter.acquire() → CircuitBreaker.check() → SmartRetryPolicy.execute()
+#   → CB feedback → Latency record → Intent resolve → Eviction
+```
+
+**Intent State Machine**: Mỗi lệnh đi qua lifecycle `PENDING → SENT → ACKNOWLEDGED / UNCONFIRMED → RESOLVED`. Intent stale (>300s chưa RESOLVED) bị evict vào `deque(maxlen=10,000)` — chống OOM.
+
+#### Execution Configuration Hierarchy (`cau_hinh/thuc_thi/`)
+
+Toàn bộ runtime parameters của Execution Core được tách thành 5 file YAML độc lập, cho phép thay đổi hành vi mà không cần sửa code:
+
+| File | Scope | Tham số chính |
+|------|-------|--------------|
+| `oms_config.yaml` | OrderBook + Reconciliation | `segment_rotation_count: 60000`, `archive_max_size: 50000`, `reconciliation.interval_s: 60` |
+| `pnl_config.yaml` | PnL Accounting | `scale_factor: 100000000`, `checkpoint_every: 1000`, `max_drawdown_pct: 0.30` |
+| `session_config.yaml` | Daily Session | `rotation_hour_utc: 0`, `trailing_stats_days: 30`, `risk_free_rate: 0.04` |
+| `position_sync_config.yaml` | Drift Detection | `size_abs_tol: 0.0001`, `consecutive_violations_to_kill: 3`, `clock_skew.warning_threshold_ms: 500` |
+| `retry_config.yaml` | Protection Stack | `place.rate: 10/s`, `circuit_breaker.place.threshold: 30`, `retry.max_retries: 3` |
+
 ---
 
 ### 3.7. 🚨 Lưới Bảo Vệ (Risk System)
@@ -1107,10 +1392,15 @@ gc_collections_delta: tuple[int, int, int]  # GC runs per generation
 | `test_chaos_risk.py` | Chaos Test — cố tình gây lỗi để kiểm tra phục hồi |
 | `test_execution_pipeline.py` | End-to-end pipeline thực thi lệnh |
 | `test_feature_layer.py` | Kiểm thử lớp tính năng |
+| `test_rest_api.py` | Kiểm thử REST API calls tới exchanges |
 | `test_signal_engine.py` | Kiểm thử engine tín hiệu |
 | `test_profiler.py` | Đo hiệu năng hệ thống |
 | `test_state.py` | Kiểm thử WAL + state recovery |
 | `test_ws_gateway_fixes.py` | Regression tests cho WebSocket fixes |
+| `xem_du_lieu_binance.py` | Raw data stream inspector — Binance |
+| `xem_du_lieu_bybit.py` | Raw data stream inspector — Bybit |
+| `xem_du_lieu_okx.py` | Raw data stream inspector — OKX |
+| `xem_du_lieu_tho.py` | Raw data stream inspector — Multi-exchange |
 
 ---
 
@@ -1149,6 +1439,8 @@ self._scratch_payload.qty   = 1.0
 | `ROB arrays` | `memory_store.py` | 256 × 64 × 16 × 8B | Reorder Buffer |
 | `HdrHistogram._cur` | `histogram.py` | 3584 × 8B = 28KB | Latency buckets |
 | `_WALEntry[65536]` | `durable_wal.py` | 65K × 64B = 4MB | WAL mmap |
+| `OrderPool[2048]` | `order_book.py` | 2048 × ~120B = 240KB | OMS Order Pool |
+| `_fill_id_cache` | `pnl_tracker.py` | 10K entries OrderedDict | Fill Idempotency |
 
 > **Kết quả**: Thread 1 (Hot-Path) gọi `gc.disable()` hoàn toàn. Không có GC nào chạy trên thread xử lý tín hiệu.
 
@@ -1285,8 +1577,10 @@ if _tv_mult < 1.0:                # DEGRADED: PTP crash
 | Serialization | orjson | JSON serialize ~10× nhanh hơn stdlib |
 | Numerical | NumPy, ctypes | Structured arrays, memmove, zero-alloc |
 | Data Format | Apache Parquet | Columnar storage, Hive partitioning |
-| Data Processing | Polars | Vectorized backtest (LazyFrame) |
+| Data Processing | Polars | Vectorized backtest + Session compaction |
 | ML Framework | PyTorch, ONNX | Model training & inference |
+| HTTP Client | httpx | Async REST API calls |
+| File Locking | portalocker | Cross-platform file locking (WAL/Session) |
 | Monitoring | psutil, tracemalloc | CPU/RAM/GC metrics |
 | Alerting | Telegram Bot API | Real-time alert notifications |
 | Containerization | Docker, docker-compose | Infrastructure packaging |
@@ -1300,20 +1594,35 @@ if _tv_mult < 1.0:                # DEGRADED: PTP crash
 
 | Metric | Giá trị |
 |--------|---------|
-| Tổng số module Python | 50+ files |
+| Tổng số module Python | 65+ files |
 | File lớn nhất | `vong_lap_su_kien.py` — 828 dòng |
+| OMS OrderBook | `order_book.py` — 757 dòng |
+| PnL Aggregator | `pnl_aggregator.py` — 719 dòng |
+| Session Manager | `session_manager.py` — 662 dòng |
 | File quan trọng nhất | `risk_gate.py` — 605 dòng, 6 rules |
+| Position Synchronizer | `position_sync.py` — 441 dòng |
+| Execution Wrapper | `execution_wrapper.py` — 435 dòng |
 | Feature Engine | `incremental_engine.py` — 421 dòng |
+| Reconciler | `reconciler.py` — 400 dòng |
+| PnL Tracker | `pnl_tracker.py` — 383 dòng |
 | Feature Store | `memory_store.py` — 337 dòng |
 | Durable WAL | `durable_wal.py` — 355 dòng |
-| Feature Registry | `feature_registry.py` — 331 dòng |
+| Fee Ledger | `fee_ledger.py` — 299 dòng |
+| Funding Collector | `funding_collector.py` — 266 dòng |
+| Circuit Breaker | `circuit_breaker.py` — 261 dòng |
+| Rate Limiter | `rate_limiter.py` — 257 dòng |
+| Retry Policy | `retry_policy.py` — 222 dòng |
+| Mark-to-Market | `mark_to_market.py` — 120 dòng |
+| OMS Serializer | `oms_serializer.py` — 135 dòng |
 | Latency Tracker | `tracker.py` — 93 dòng (tinh gọn) |
 | Số Alpha Features | 6 (MicroPrice, BookPressure, WelfordVar, EMA Fast/Slow, OFI) |
 | Số Thread song song | 5 (Hot-Path, Worker, Oracle, Logger, Watchdog) |
 | Số Exchange hỗ trợ | 3 (Binance, OKX, Bybit) |
 | Số Risk Rules | 6 (DailyLoss, Drawdown, Rate, Duplicate, OpenOrders, Concentration) |
+| PnL Scale Factor | 1e8 (100,000,000) — integer arithmetic |
 | WAL File Size | ~4MB (32 + 65536 × 64 bytes) |
-| Pool Size | 16,384 slots × 192 bytes = ~3.1 MB |
+| OMS Order Pool | 2,048 slots (slots=True, ~3× RAM savings) |
+| Feature Pool Size | 16,384 slots × 192 bytes = ~3.1 MB |
 | Ring Buffer | 256 slots (power-of-2) |
 | ROB Window | 5ms, 64 slots |
 | Target Latency | < 10–50µs per tick |
@@ -1323,10 +1632,11 @@ if _tv_mult < 1.0:                # DEGRADED: PTP crash
 ## 7. 🚀 Hướng Phát Triển Tiếp Theo
 
 1. **AI & Model Development** — Triển khai ONNX inference engine trong `hoc_may/suy_luan/`. Tích hợp Transformer-based Alpha model.
-2. **Replay Engine** — Xây dựng logic phát lại trong `nghien_cuu/dong_co_phat_lai/` để validate chiến lược với dữ liệu WAL thực tế.
-3. **Chaos Testing** — Triển khai bộ test toàn diện để verify Watchdog + Risk Gate xử lý đúng khi cố tình inject failures.
-4. **Grafana Dashboard** — Kết nối `SystemMetricsReporter` và `LatencyReporter` vào Grafana qua Prometheus exporter.
+2. **Replay Engine Validation** — Validate `nghien_cuu/dong_co_phat_lai/` với SessionManager + DurableWAL mới để đảm bảo simulation-to-reality parity.
+3. **Chaos Testing** — Chạy `test_chaos_risk.py` với cấu hình mới (`retry_config.yaml`, `position_sync_config.yaml`) để verify Circuit Breaker + Watchdog + Kill-Switch xử lý đúng khi inject failures.
+4. **Grafana Integration** — Kết nối `SystemMetricsReporter`, `LatencyReporter`, `ExecutionWrapper.snapshot()`, và `PnLAggregator.dump_crash_state()` vào Grafana qua Prometheus exporter.
 5. **Multi-Strategy Execution** — Kích hoạt `danh_ba_chien_luoc/` để chạy nhiều Alpha strategies song song với vốn phân bổ động.
+6. **MLOps Integration** — Tích hợp ML Monitoring (`sai_lech_dac_trung/`, `sai_lech_du_doan/`) với PnL Accounting để auto-disable model khi prediction drift vượt ngưỡng.
 
 ---
 
