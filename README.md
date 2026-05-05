@@ -1503,7 +1503,7 @@ ctypes.memmove(
 
 ```
                     ┌─ commit_raw() PASS ──► Ghi vào Live Store ✓
-Snapshot → Draft ─►│
+Snapshot → Draft ─► │
                     └─ commit_raw() FAIL ──► Rollback SymbolState từ Scratch ✓
 ```
 
@@ -1535,7 +1535,7 @@ Cả accept path và reject path đều **zero allocation** nhờ pre-allocated 
 
 ```
 Thread 5 ──► ZMQ PUB (port 5559)  ──► Watchdog SUB  ──┐
-             │                                          ├─ BOTH miss ≥ N → KILL
+             │                                        ├─ BOTH miss ≥ N → KILL
 Thread 5 ──► os.utime(alive_path) ──► Watchdog stat ──┘
 ```
 
