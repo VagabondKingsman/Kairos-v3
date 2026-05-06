@@ -385,7 +385,7 @@ KAIROS v3/
 | Research / Replay Engine | `nghien_cuu/` | — | 🔧 WIP | — |
 | ML / ONNX Inference | `hoc_may/suy_luan/` | — | 🔧 WIP | — |
 
-> 📸 **[BẰNG CHỨNG CẦN THIẾT]** *Loại: pytest-output.* Chèn ảnh chụp màn hình `pytest test/ -v --tb=short` tại đây. Xác nhận tất cả 43 tests pass trên Python 3.13+. File: `test/test_session_pnl.py`, `test/test_position_funding.py`, `test/test_paper_adapter_queries.py`.
+<img width="1920" height="1080" alt="image" src="https://github.com/user-attachments/assets/7208720b-877d-4960-8e0d-1f991cbd9ca1" />
 
 **Nguyên tắc thiết kế hiệu năng:** hot-path loại bỏ GC hoàn toàn (`gc.disable()`), pre-allocated ctypes struct thay Python objects, lock-free SPSC ring buffer, tránh lock trên critical path khi SPSC assumption còn giữ được.
 
@@ -566,7 +566,7 @@ if effective_mask == 0:
 
 **Hợp đồng hiệu năng:** latency budget **< 10–50µs/tick** từ WebSocket receive đến feature ready trong `OnlineFeatureStore`.
 
-> 📸 **[BẰNG CHỨNG CẦN THIẾT]** *Loại: latency histogram.* Chèn ảnh chụp màn hình HdrHistogram P50/P99/P999 của `tick_to_feature` latency tại đây (xem `giam_sat/theo_doi_do_tre/tracker.py`). Target: P99 < 50µs.
+<img width="1920" height="1080" alt="image" src="https://github.com/user-attachments/assets/e35efc49-1df3-4ce2-8247-ea6420478ac5" />
 
 #### Thu thập dữ liệu (`dong_co_du_lieu/thu_thap/`)
 
@@ -921,7 +921,7 @@ class WALEntryType(IntEnum):
 3. **Đặt con trỏ**: `seq_next = last_valid_entry.seq_id + 1` — bắt đầu ghi từ sau entry hợp lệ cuối cùng
 4. **Rebuild state**: Replay các entry hợp lệ để khôi phục lại trạng thái in-memory (vị thế, lệnh đang mở, PnL)
 
-> 📸 **[BẰNG CHỨNG CẦN THIẾT]** *Loại: fault-injection test.* Chèn output `pytest test/test_state.py -v` tại đây. Xác nhận: inject crash sau mỗi entry type (`ORDER_SENT`, `ORDER_FILLED`, `POSITION_SNAP`) → restart → state == expected. Coverage: CRC corruption detection, partial write truncation.
+<img width="1920" height="1080" alt="image" src="https://github.com/user-attachments/assets/850d2a61-790b-412a-831d-9751e3c78451" />
 
 > Muốn gọi WAL là `truth source` đúng nghĩa, cần thêm 3 điều kiện: mọi mutation state phải đi qua WAL, sequencing phải nhất quán, và replay phải cho ra cùng logical state sau khi đối soát với exchange.
 
@@ -1532,7 +1532,7 @@ gc_collections_delta: tuple[int, int, int]  # GC runs per generation
 * `alert_rules.py` — Rule Engine đánh giá cảnh báo dựa trên PnL, Latency, Error Rate.
 * `telegram_sender.py` — Gửi tin nhắn Alert qua Telegram Bot API.
 
-> 📸 **[BẰNG CHỨNG CẦN THIẾT]** *Loại: pytest-output.* Chèn ảnh chụp màn hình `pytest test/ -v --tb=short` tại đây. Cần xác nhận: 43 tests collected, 43 passed, 0 failed. Môi trường: Python 3.13+, Windows/Linux, tất cả dependencies installed (`httpx`, `portalocker`).
+<img width="1920" height="1080" alt="image" src="https://github.com/user-attachments/assets/d39e89ec-f3a2-4eb0-8b89-b194853be762" />
 
 #### Test Suite (`test/`)
 
