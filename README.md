@@ -11,6 +11,14 @@
 
 `Python` • `ETL Pipeline` • `Backtesting` • `Quant Analysis`
 
+| Trường | Giá trị |
+|--------|---------|
+| Phiên bản tài liệu | v3.0 |
+| Ngày cập nhật | 2026-05-06 |
+| Trạng thái | In Development — không dùng làm production reference khi chưa pass Production Checklist (§8) |
+| Phạm vi | Architecture specification & implementation reference cho KAIROS v3 |
+| Test coverage | 43 unit/integration tests — `test/` directory |
+
 <div align="left">
  
 ---
@@ -20,7 +28,7 @@
 - [0. ⚠️ Đọc Trước Khi Tham Khảo](#read-this-first)
 - [1. 🌊 Luồng Dữ Liệu Thực Chiến (Data Flow)](#1--luồng-dữ-liệu-thực-chiến-data-flow)
 - [2. 📂 Kiến Trúc Hệ Thống (Directory Map)](#2--kiến-trúc-hệ-thống-directory-map)
-- [3. 🧩 Phân Tích Chuyên Sâu Từng Module (Deep-Dive)](#3--phân-tích-chuyên-sâu-từng-module-deep-dive)
+- [3. 🧩 Đặc Tả Module (Module Specifications)](#3--đặc-tả-module-module-specifications)
   - [3.1. Cấu Hình & Môi Trường](#31--cấu-hình--môi-trường-config--runtime)
   - [3.2. Hồ Dữ Liệu](#32-️-hồ-dữ-liệu-data-lake)
   - [3.3. Động Cơ Dữ Liệu](#33--động-cơ-dữ-liệu-data-engine)
@@ -30,7 +38,8 @@
   - [3.7. Lưới Bảo Vệ](#37--lưới-bảo-vệ-risk-system)
   - [3.8. Hạ Tầng & Giao Tiếp](#38--hạ-tầng--giao-tiếp-infrastructure)
   - [3.9. Giám Sát & Kiểm Thử](#39--giám-sát--kiểm-thử-monitoring--testing)
-- [4. 💎 Điểm Nhấn Kỹ Thuật (HFT-Inspired Engineering Highlights)](#4--điểm-nhấn-kỹ-thuật-hft-inspired-engineering-highlights)
+- [4. 💎 Ràng Buộc & Quyết Định Thiết Kế (Design Constraints)](#4--ràng-buộc--quyết-định-thiết-kế-design-constraints--engineering-decisions)
+- [8. ✅ Kiểm Tra Sẵn Sàng Production (Production Readiness Checklist)](#8--kiểm-tra-sẵn-sàng-production-production-readiness-checklist)
 
 ---
 
@@ -354,9 +363,31 @@ KAIROS v3/
 
 ---
 
-## 3. 🧩 Phân Tích Chuyên Sâu Từng Module (Deep-Dive)
+## 3. 🧩 Đặc Tả Module (Module Specifications)
 
-Dưới đây là mổ xẻ mã nguồn thực tế của từng phân hệ. Mục tiêu của Kairos là ép độ trễ về giới hạn vật lý của Python bằng cách loại bỏ Garbage Collection trên hot-path, sử dụng `ctypes` thay cho Python objects, và áp dụng kiến trúc đa luồng ưu tiên tránh lock trên hot-path khi assumption an toàn còn giữ được.
+### Trạng Thái Triển Khai (Component Status)
+
+| Module | File chính | Dòng | Trạng thái | Test |
+|--------|-----------|------|------------|------|
+| Live Orchestrator | `live_runner.py` | 1021 | ✅ Implemented | `test_live_runner.py` (14 components) |
+| Paper EMS Adapter | `paper_ems_adapter.py` | 833 | ✅ Implemented | `test_paper_adapter_queries.py` (10 tests) |
+| Execution Gateway | `vong_lap_su_kien.py` | 828 | ✅ Implemented | `test_execution_pipeline.py` |
+| OMS — OrderBook | `order_book.py` | 757 | ✅ Implemented | — |
+| PnL Aggregator | `pnl_aggregator.py` | 719 | ✅ Implemented | `test_session_pnl.py` (20 tests) |
+| Session Manager | `session_manager.py` | 662 | ✅ Implemented | `test_session_pnl.py` |
+| Risk Gate | `risk_gate.py` | 605 | ✅ Implemented | `test_chaos_risk.py` |
+| Position Synchronizer | `position_sync.py` | 441 | ✅ Implemented | `test_position_funding.py` (13 tests) |
+| Execution Wrapper | `execution_wrapper.py` | 435 | ✅ Implemented | — |
+| Feature Engine | `incremental_engine.py` | 421 | ✅ Implemented | `test_feature_layer.py` |
+| Reconciler | `reconciler.py` | 400 | ✅ Implemented | — |
+| Durable WAL | `durable_wal.py` | 355 | ✅ Implemented | `test_state.py` |
+| Funding Collector | `funding_collector.py` | 266 | ✅ Implemented | `test_position_funding.py` |
+| Research / Replay Engine | `nghien_cuu/` | — | 🔧 WIP | — |
+| ML / ONNX Inference | `hoc_may/suy_luan/` | — | 🔧 WIP | — |
+
+> 📸 **[BẰNG CHỨNG CẦN THIẾT]** *Loại: pytest-output.* Chèn ảnh chụp màn hình `pytest test/ -v --tb=short` tại đây. Xác nhận tất cả 43 tests pass trên Python 3.13+. File: `test/test_session_pnl.py`, `test/test_position_funding.py`, `test/test_paper_adapter_queries.py`.
+
+**Nguyên tắc thiết kế hiệu năng:** hot-path loại bỏ GC hoàn toàn (`gc.disable()`), pre-allocated ctypes struct thay Python objects, lock-free SPSC ring buffer, tránh lock trên critical path khi SPSC assumption còn giữ được.
 
 ---
 
@@ -533,7 +564,9 @@ if effective_mask == 0:
 
 ### 3.3. ⚡ Động Cơ Dữ Liệu (Data Engine)
 
-Trái tim xử lý dữ liệu realtime với ngân sách độ trễ (latency budget) **< 10–50µs/tick**.
+**Hợp đồng hiệu năng:** latency budget **< 10–50µs/tick** từ WebSocket receive đến feature ready trong `OnlineFeatureStore`.
+
+> 📸 **[BẰNG CHỨNG CẦN THIẾT]** *Loại: latency histogram.* Chèn ảnh chụp màn hình HdrHistogram P50/P99/P999 của `tick_to_feature` latency tại đây (xem `giam_sat/theo_doi_do_tre/tracker.py`). Target: P99 < 50µs.
 
 #### Thu thập dữ liệu (`dong_co_du_lieu/thu_thap/`)
 
@@ -695,15 +728,13 @@ Bộ não của hệ thống. Trong khi các quy tắc rủi ro và thực thi l
 
 ### 3.6. ⚔️ Thực Thi Chiến Dịch (Execution Core)
 
-Đây là "hệ thần kinh vận động" của Kairos — nơi tín hiệu giao dịch được biến thành lệnh thực sự gửi lên sàn. File chính `vong_lap_su_kien.py` dài **828 dòng**, là file lớn và phức tạp nhất trong toàn bộ codebase.
+**Trách nhiệm:** Nhận `SignalEvent` từ ZMQ bus, qua 7 pre-trade gates, đẩy vào SPSC ring buffer, worker sizing lệnh và submit qua EMS. File chính `vong_lap_su_kien.py` — 828 dòng.
 
-Bài toán cốt lõi: Làm sao nhận tín hiệu từ Signal Engine, kiểm tra rủi ro, tính kích thước lệnh, và gửi lên sàn — tất cả trong vài chục microsecond, đồng thời vẫn đảm bảo an toàn tuyệt đối (không bao giờ gửi lệnh sai/trùng/vượt giới hạn)?
-
-Giải pháp: Tách hệ thống thành **5 thread chuyên biệt**, mỗi thread chỉ làm đúng một việc.
+**Hợp đồng hiệu năng:** signal-to-ring-write < 10µs (Thread 1 hot-path, GC disabled). ring-read-to-HTTP-submit latency không bị bounded (network dependent).
 
 #### Kiến trúc 5-Thread (`ExecutionGateway`)
 
-Tại sao cần 5 thread thay vì 1? Vì Python có GIL (Global Interpreter Lock), chỉ 1 thread chạy Python bytecode tại một thời điểm. Nhưng GIL được giải phóng khi gọi I/O (ZMQ recv, HTTP request, file write). Bằng cách tách mỗi loại I/O vào thread riêng, hệ thống tận dụng tối đa song song hóa mà GIL cho phép:
+Python GIL được giải phóng tại I/O boundaries (ZMQ recv, HTTP, file write). Mỗi thread chiếm một loại I/O riêng biệt để tối đa hóa parallelism trong giới hạn GIL:
 
 ```
 Thread 1  HOT PATH     ZMQ SUB(5557) → versioned ring buffer + risk commit
@@ -721,9 +752,9 @@ Thread 5  WATCHDOG HB  ZMQ PUB(5559) + file mtime touch → dual-channel heartbe
 
 #### Thread 1: Hot-Path — Zero-Allocation Receive
 
-Đây là thread quan trọng nhất. GC bị tắt hoàn toàn (`gc.disable()`) vì chỉ cần 1 lần GC Gen-0 collection (1-5ms) là đủ để tín hiệu giao dịch trở nên vô giá trị (quá cũ). Mọi object đều được tạo sẵn trước khi vào vòng lặp:
+**Invariants:** `gc.disable()` trước khi vào loop. Tất cả object (recv buffer, ctypes overlay, ring slots) pre-allocated tại `__init__`. Zero allocation trong hot loop.
 
-Bước đầu tiên, hệ thống tạo một "khuôn đúc" 64 bytes trong RAM — đây là vùng nhớ cố định mà mọi tín hiệu đến sẽ được "đổ" vào, giống như nước đổ vào cùng một cốc mà không cần tạo cốc mới:
+**Pre-allocated ZMQ receive buffer** — 64-byte `bytearray` với ctypes overlay, tái sử dụng mỗi signal:
 
 ```python
 # thuc_thi_lenh/vong_lap_su_kien.py — Thread 1
@@ -760,7 +791,7 @@ while not stop_event.is_set():
         self._drop("flow_bp"); continue
 ```
 
-Đoạn code trên mô tả vòng lặp chính: mỗi khi nhận được tín hiệu giao dịch từ ZMQ, hệ thống copy 64 bytes dữ liệu thô vào buffer cố định bằng `ctypes.memmove` (không tạo Python object), rồi lần lượt kiểm tra qua các "cửa chặn" an toàn. Nếu bất kỳ cửa nào từ chối, tín hiệu bị vứt bỏ ngay lập tức và vòng lặp tiếp tục — không lãng phí thời gian.
+Mỗi signal được copy 64 bytes vào recv buffer bằng `ctypes.memmove` (zero allocation), sau đó qua 7 gates theo thứ tự. Gate đầu tiên fail → drop ngay, không evaluate tiếp.
 
 > Đây là trade-off `correctness vs latency` cần đọc thật kỹ. Cơ chế drop chỉ phù hợp khi việc bỏ event không làm sai quyết định giao dịch hoặc hệ thống có sequencing/gap detection để phát hiện trạng thái đã degraded.
 
@@ -848,9 +879,9 @@ def _heartbeat_loop(self):
 
 #### Durable WAL (`durable_wal.py`) — 355 dòng
 
-Hãy tưởng tượng: bot đang chạy, vừa gửi lệnh mua 1 BTC lên sàn, nhưng ngay lúc đó máy tính bị mất điện. Khi khởi động lại, bot không biết lệnh đó đã được gửi hay chưa — nếu gửi lại sẽ mua gấp đôi, nếu bỏ qua sẽ mất cơ hội.
+**Trách nhiệm:** Ghi nhật ký mutation intent lên đĩa trước khi HTTP request được gửi. Cung cấp `best-known state` sau crash/restart trong phạm vi mutations đã được WAL bao phủ.
 
-**Write-Ahead Log (WAL)** giảm mạnh rủi ro này bằng cách **ghi nhật ký trước khi hành động**. Trước khi gửi lệnh lên sàn, hệ thống ghi vào WAL "sắp gửi lệnh mua 1 BTC". Khi sàn xác nhận khớp, ghi tiếp "lệnh đã khớp". Nếu máy sập giữa chừng, khi khởi động lại có thể đọc WAL để phục hồi `best-known state` trong phạm vi các mutation đã thực sự được WAL bao phủ.
+**Nguyên lý Write-Ahead:** `ORDER_SENT` entry được append vào WAL trước khi HTTP call được initiated. Sau crash, replay WAL phân biệt `in-flight` (sent, không có fill response) vs `confirmed` vs `unknown`. Ghost-position risk giảm xuống còn trong cửa sổ giữa WAL write và exchange confirmation.
 
 File WAL có kích thước cố định ~4MB, được ánh xạ vào RAM qua `mmap` — ghi vào WAL nhanh như ghi vào RAM, nhưng dữ liệu vẫn an toàn trên đĩa. Mỗi entry WAL có cấu trúc cố định 64 bytes (vừa khít 1 cache line CPU, tối ưu tốc độ đọc/ghi):
 
@@ -889,6 +920,8 @@ class WALEntryType(IntEnum):
 2. **Scan tuần tự**: Đọc từng entry, kiểm tra CRC. Entry đầu tiên có CRC sai = ranh giới hỏng → cắt bỏ phần đuôi corrupt
 3. **Đặt con trỏ**: `seq_next = last_valid_entry.seq_id + 1` — bắt đầu ghi từ sau entry hợp lệ cuối cùng
 4. **Rebuild state**: Replay các entry hợp lệ để khôi phục lại trạng thái in-memory (vị thế, lệnh đang mở, PnL)
+
+> 📸 **[BẰNG CHỨNG CẦN THIẾT]** *Loại: fault-injection test.* Chèn output `pytest test/test_state.py -v` tại đây. Xác nhận: inject crash sau mỗi entry type (`ORDER_SENT`, `ORDER_FILLED`, `POSITION_SNAP`) → restart → state == expected. Coverage: CRC corruption detection, partial write truncation.
 
 > Muốn gọi WAL là `truth source` đúng nghĩa, cần thêm 3 điều kiện: mọi mutation state phải đi qua WAL, sequencing phải nhất quán, và replay phải cho ra cùng logical state sau khi đối soát với exchange.
 
@@ -935,18 +968,24 @@ def _gate_reject_reason(self) -> Optional[str]:
 
 #### PnL Accounting Engine (`ke_toan_pnl/`) — 1,521 dòng
 
-Bài toán tính lãi/lỗ trong giao dịch crypto tưởng chừng đơn giản nhưng ẩn chứa 3 cạm bẫy chết người: (1) **Floating-point error** — `0.1 + 0.2 != 0.3` trong IEEE 754, tích lũy qua hàng nghìn giao dịch sẽ sai lệch hàng trăm USD; (2) **Concurrent mutation** — Thread 1 đọc PnL trong khi Thread 2 đang cập nhật → torn read; (3) **Crash mid-update** — mất điện giữa lúc cập nhật fee → PnL và fee không khớp vĩnh viễn.
+**Ba rủi ro kế toán và cơ chế xử lý:**
 
-Kairos giảm mạnh rủi ro của cả 3 bằng kiến trúc **Integer-Scaled Arithmetic + WAL-Backed Checkpoint + OCC (Optimistic Concurrency Control)**:
+| Rủi ro | Biểu hiện | Cơ chế xử lý |
+|--------|-----------|--------------|
+| Floating-point accumulation | `0.1 + 0.2 ≠ 0.3` tích lũy qua nghìn giao dịch | Integer-scaled arithmetic: mọi giá trị × `scale_factor=1e8` → `int64` |
+| Concurrent mutation (torn read) | Thread 1 đọc PnL khi Thread 2 đang cập nhật | OCC với `scale_ref.version` check trong `sym_lock` |
+| Crash mid-update | Mất điện giữa fee update → PnL/fee diverge vĩnh viễn | WAL dual-entry checkpoint: `CheckpointA` + `CheckpointB` liên kết qua `txn_nonce` |
+
+**Kiến trúc:** Integer-Scaled Arithmetic + WAL-Backed Checkpoint + OCC:
 
 * **`pnl_aggregator.py` (719 dòng)**: Root orchestrator — điều phối `RealizedPnLTracker`, `FeeLedger`, và `MarkToMarket`. Sở hữu WAL checkpoint protocol, authority reconciliation, và crash-forensics dump.
 * **`pnl_tracker.py` (383 dòng)**: Tính realized PnL bằng thuật toán FIFO (First-In-First-Out). Mỗi fill được ghi WAL `TRADE_RECORD` 32 bytes.
 * **`fee_ledger.py` (299 dòng)**: Ghi nhận trade fees và funding payments. Phát hiện anomaly (fee > 1% notional → cảnh báo).
 * **`mark_to_market.py` (120 dòng)**: Theo dõi mark price real-time và tính unrealized PnL.
 
-**Integer Arithmetic** — Tại sao không dùng `float`?
+**Integer Arithmetic — Precision Contract:**
 
-Mọi giá trị tài chính được nhân với `scale_factor = 1e8` (100,000,000) và lưu dưới dạng `int64`. Phép toán integer trong Python là chính xác tuyệt đối — không có epsilon error. Khi cần hiển thị, chia ngược cho `scale_factor`:
+Mọi giá trị tài chính được nhân với `scale_factor = 1e8` (100,000,000) và lưu dưới dạng `int64`. Python integer arithmetic là exact — không có epsilon error. Khi cần hiển thị, chia ngược cho `scale_factor`:
 
 ```python
 # Ví dụ: 0.00012345 BTC → 12345 (scaled)
@@ -1006,9 +1045,9 @@ CheckpointB (type=70): txn_nonce(4B) + peak_equity(8B) + max_drawdown(8B) + tota
 
 #### Session Manager (`session_manager.py`) — 662 dòng
 
-Bài toán: Mỗi ngày giao dịch cần được "đóng sổ" — tính tổng lãi/lỗ, Sharpe ratio, reset bộ đếm, và lưu trữ kết quả vào kho dữ liệu lịch sử. Nếu quá trình đóng sổ bị gián đoạn (mất điện, crash), dữ liệu phải không bị mất hoặc trùng lặp.
+**Trách nhiệm:** Đóng sổ phiên giao dịch hàng ngày — snapshot PnL aggregator, tính Sharpe ratio, ghi record vào NDJSON archive, reset session state. Đảm bảo idempotency: nếu rotation bị interrupt giữa chừng, không mất record và không duplicate.
 
-SessionManager quản lý vòng đời phiên giao dịch hàng ngày với **atomic rotation**, **crash-resilient writes**, và **hot/cold storage tiering**:
+**Cơ chế:** atomic rotation + verified write loop (read-back sau write) + hot/cold storage tiering (NDJSON active → Parquet cold):
 
 **Rotate Session** — Quy trình đóng sổ ngày:
 
@@ -1109,7 +1148,9 @@ FundingCollector thu thập định kỳ các khoản thanh toán funding rate t
 
 #### Protection Stack (`chien_luoc_thu_lai/`) — 1,175 dòng
 
-Khi giao dịch với sàn qua REST API, 4 loại sự cố có thể xảy ra bất cứ lúc nào: (1) **Rate limit** — sàn trả HTTP 429 vì quá nhiều request; (2) **Server error** — HTTP 5xx do sàn quá tải; (3) **Timeout** — request biến mất, không biết lệnh đã vào matching engine chưa; (4) **Connection reset** — mất kết nối giữa chừng. Protection Stack xử lý tất cả 4 trường hợp qua 3 tầng bảo vệ xếp chồng:
+**Trách nhiệm:** Xử lý 4 loại lỗi REST API (429 rate-limit, 5xx server error, timeout, connection reset) qua 3 tầng xếp chồng. **Invariant quan trọng nhất:** `PLACE + TIMEOUT = UnconfirmedOrder` — tuyệt đối không retry, phải reconcile qua OMS.
+
+**Kiến trúc 3 tầng:**
 
 **Tầng 1: Adaptive Rate Limiter** (`rate_limiter.py`) — Token Bucket per-endpoint. PLACE, CANCEL, và INFO có bucket **hoàn toàn độc lập** — khi PLACE cạn token (thị trường sôi động), CANCEL vẫn đi được (quan trọng khi cần emergency cancel). Rate tự điều chỉnh qua EWMA latency tracking:
 
@@ -1165,9 +1206,11 @@ Toàn bộ runtime parameters được hợp nhất vào 3 file YAML phẳng, ch
 
 ### 3.7. 🚨 Lưới Bảo Vệ (Risk System)
 
-Trong giao dịch tự động, sai lầm lớn nhất không phải là bỏ lỡ cơ hội — mà là **mất kiểm soát rủi ro**. Một bug nhỏ có thể khiến bot gửi hàng trăm lệnh trong 1 giây, hoặc tập trung 100% vốn vào 1 cặp coin, hoặc tiếp tục giao dịch khi đã lỗ vượt ngưỡng cho phép. Risk Gate là "người gác cổng" có quyền lực tối cao — nó có thể từ chối BẤT KỲ lệnh nào, kể cả khi Signal Engine và Portfolio Engine đều đồng ý.
+**Trách nhiệm:** Cửa chặn cuối cùng trước khi order rời hệ thống. Quyền từ chối tuyệt đối bất kể Signal Engine và Portfolio Engine đã approve. Fail-fast: evaluate rules theo thứ tự chi phí tính toán tăng dần.
 
-File `risk_gate.py` dài **605 dòng**, thiết kế theo triết lý: **mọi lệnh đều có tội cho đến khi được chứng minh vô tội**. Hàm `check()` phải hoàn thành trong < 50µs.
+**Hợp đồng hiệu năng:** `risk_gate.check()` hoàn thành trong **< 50µs** trên hot-path. File `risk_gate.py` — 605 dòng.
+
+> 📸 **[BẰNG CHỨNG CẦN THIẾT]** *Loại: microbenchmark.* Chèn HdrHistogram P50/P99 của `check()` dưới tải ≥ 1,000 calls/s tại đây. Target: P99 < 50µs. Xem `giam_sat/theo_doi_do_tre/tracker.py` — `signal_to_order` histogram.
 
 #### Pre-trade Risk Gate — `check()` < 50µs
 
@@ -1337,6 +1380,8 @@ Quản lý 3 hàng đợi SPSC theo ưu tiên:
 | SIGNAL | Ring buffer events | Ưu tiên cao |
 | DATA | Market data updates | Drain sau cùng, có fairness guarantee |
 
+> SPSC queues chỉ an toàn khi có đúng một writer và một reader. Đây là assumption thiết kế — nếu codebase mở rộng và multiple producers/consumers được thêm, cần runtime assertion tại điểm produce/consume (ví dụ: `threading.get_ident()` guard hoặc `assert writer_id == current_thread`) để tránh data race. Latency đẹp không chứng minh được correctness khi assumption bị vi phạm.
+
 #### Event Schema (`luoc_do_du_lieu/v1/`)
 
 Chuẩn hóa cấu trúc toàn hệ thống bằng ctypes struct. Mọi event được đóng gói ở kích thước cố định để fit vừa CPU cache line:
@@ -1487,6 +1532,8 @@ gc_collections_delta: tuple[int, int, int]  # GC runs per generation
 * `alert_rules.py` — Rule Engine đánh giá cảnh báo dựa trên PnL, Latency, Error Rate.
 * `telegram_sender.py` — Gửi tin nhắn Alert qua Telegram Bot API.
 
+> 📸 **[BẰNG CHỨNG CẦN THIẾT]** *Loại: pytest-output.* Chèn ảnh chụp màn hình `pytest test/ -v --tb=short` tại đây. Cần xác nhận: 43 tests collected, 43 passed, 0 failed. Môi trường: Python 3.13+, Windows/Linux, tất cả dependencies installed (`httpx`, `portalocker`).
+
 #### Test Suite (`test/`)
 
 | File | Mục đích |
@@ -1499,6 +1546,9 @@ gc_collections_delta: tuple[int, int, int]  # GC runs per generation
 | `test_profiler.py` | Đo hiệu năng hệ thống |
 | `test_state.py` | Kiểm thử WAL + state recovery |
 | `test_ws_gateway_fixes.py` | Regression tests cho WebSocket fixes |
+| `test_paper_adapter_queries.py` | 10 tests cho `PaperExchangeAdapter.get_positions/get_balances/get_funding_history` |
+| `test_position_funding.py` | 13 tests cho `PositionSynchronizer` (full_sync, drift detection, kill-switch) và `FundingCollector` |
+| `test_session_pnl.py` | 20 tests cho `SessionManager` (checksum, rotate, crash-resilient write) và `PnLAggregator` (on_fill, checkpoint, scale downgrade, integrity, replay) |
 | `xem_du_lieu_binance.py` | Raw data stream inspector — Binance |
 | `xem_du_lieu_bybit.py` | Raw data stream inspector — Bybit |
 | `xem_du_lieu_okx.py` | Raw data stream inspector — OKX |
@@ -1506,17 +1556,19 @@ gc_collections_delta: tuple[int, int, int]  # GC runs per generation
 
 ---
 
-## 4. 💎 Điểm Nhấn Kỹ Thuật (HFT-Inspired Engineering Highlights)
+## 4. 💎 Ràng Buộc & Quyết Định Thiết Kế (Design Constraints & Engineering Decisions)
 
-Phần này tóm tắt các triết lý thiết kế cốt lõi của Kairos. Dù được phát triển trên Python, hệ thống đạt giới hạn cực đại về hiệu năng nhờ áp dụng tư duy của C++/Rust vào từng dòng code.
+Phần này ghi lại các quyết định thiết kế có trade-off rõ ràng — tại sao chọn thiết kế A thay vì B, và invariant nào phải giữ để thiết kế còn đúng. Mỗi mục có evidence requirement để chứng minh claim còn đúng sau thay đổi.
 
 ---
 
-### 4.1. Triết lý Zero-Allocation (Chống GC Pauses)
+### 4.1. Zero-Allocation Design Constraint (Chống GC Pauses)
 
-**Vấn đề**: Trong Python, mỗi lần tạo `dict`, `list`, hay `bytes` mới sẽ kích hoạt Garbage Collector. GC Gen-0 collection có thể tạo latency spike 1-5ms, Gen-2 lên đến 50ms — thảm họa trong hệ thống giao dịch tần suất cao.
+**Ràng buộc thiết kế:** Python GC Gen-0 collection gây latency spike **1-5ms**, Gen-2 lên đến **50ms**. Trên hot-path (Thread 1), bất kỳ allocation nào đều là rủi ro GC pause.
 
-**Giải pháp Kairos**: Pre-allocation 100%. Mọi object đều được khởi tạo MỘT LẦN DUY NHẤT ở `__init__`. Hot-path chỉ ghi đè dữ liệu lên vùng nhớ đã cấp phát.
+**Quy tắc:** Pre-allocation 100% tại `__init__`. Hot-path chỉ ghi đè lên vùng nhớ đã cấp phát — không tạo `dict`, `list`, hay `bytes` mới.
+
+> 📸 **[BẰNG CHỨNG CẦN THIẾT]** *Loại: GC pause profiler.* Chèn output `gc.get_stats()` delta và `gc.callbacks` trace qua 10,000 ticks trên Thread 1 tại đây. Xác nhận: `gc.get_count()` không tăng trong hot loop.
 
 ```python
 # ❌ ANTI-PATTERN: Tạo dict mới MỖI tick → GC pressure
@@ -1546,13 +1598,13 @@ self._scratch_payload.qty   = 1.0
 
 > **Kết quả**: Thread 1 (Hot-Path) gọi `gc.disable()` hoàn toàn. Không có GC nào chạy trên thread xử lý tín hiệu.
 
+> 📸 **[BẰNG CHỨNG CẦN THIẾT]** *Loại: memory profiler + GC stats.* Chèn output `python -m tracemalloc` hoặc `objgraph.show_growth()` trên Thread 1 sau 10,000 ticks tại đây. Xác nhận: `gc.get_count()` không tăng trên Thread 1, allocation delta = 0 sau warm-up.
+
 ---
 
 ### 4.2. Triết lý Memory Alignment (Chống False-Sharing)
 
-**Vấn đề**: Khi 2 threads đọc/ghi các biến nằm chung 1 CPU cache line (64B), phần cứng liên tục invalidate cache → hiệu năng sụt giảm nghiêm trọng dù code đa luồng.
-
-**Giải pháp Kairos**: Padding mọi struct quan trọng vào bội số của 64 bytes:
+**Thiết kế:** Padding mọi struct quan trọng vào bội số 64 bytes để đảm bảo mỗi struct chiếm đúng 1 cache line, loại bỏ false-sharing giữa các thread:
 
 ```python
 # ❌ Struct 50 bytes — 2 symbols có thể nằm chung cache line
@@ -1573,13 +1625,17 @@ class _WALEntry(ctypes.LittleEndianStructure):
     ]   # Total: 8+8+4+4+32+4+4 = 64 bytes ✓
 ```
 
+> 📸 **[BẰNG CHỨNG CẦN THIẾT]** *Loại: perf benchmark.* Chèn kết quả `perf stat` hoặc `valgrind --tool=cachegrind` so sánh cache-miss rate của aligned vs unaligned struct access tại đây. Xác nhận `_WALEntry` không gây L1 cache miss khi truy cập tuần tự.
+
 ---
 
-### 4.3. Triết lý ctypes.memmove (Bypass Python Object Layer)
+### 4.3. ctypes.memmove — Bypass Python Object Layer
 
-**Vấn đề**: Copy 16 float64 bằng Python for-loop tạo 16 temporary Python float objects, tốn ~1-2µs.
+**Context:** Copy 16 float64 bằng Python for-loop tạo 16 temporary Python float objects (~1-2µs).
 
-**Giải pháp Kairos**: `ctypes.memmove` copy trực tiếp 128 bytes ở tốc độ C (~0.05µs, nhanh gấp **20-40×**):
+**Thiết kế:** `ctypes.memmove` copy trực tiếp 128 bytes ở tốc độ C (~0.05µs, nhanh gấp **20-40×**):
+
+> 📸 **[BẰNG CHỨNG CẦN THIẾT]** *Loại: microbenchmark.* Chèn output `python -m timeit` so sánh Python loop vs `ctypes.memmove` cho 128-byte copy tại đây. Expected: memmove ~0.04-0.06µs, loop ~1.2-2.0µs.
 
 ```python
 # ❌ Python loop: 16 objects tạm, ~1.5µs
@@ -1597,11 +1653,11 @@ ctypes.memmove(
 
 ---
 
-### 4.4. Triết lý Transactional Update (Chống Data Corruption)
+### 4.4. Transactional Update Protocol (Chống Data Corruption)
 
-**Vấn đề**: Nếu update feature bị reject giữa chừng (backpressure/stale), `SymbolState` (Welford mean, EMA) đã bị đột biến nhưng feature không được commit → state và store bất đồng bộ vĩnh viễn.
+**Invariant:** Nếu `commit_raw()` bị reject (backpressure/stale), `SymbolState` phải rollback về trạng thái trước. State và store không bao giờ được bất đồng bộ.
 
-**Giải pháp Kairos**: Mô hình giao dịch 4 bước — compute trên draft, commit hoặc rollback:
+**Protocol 4 bước — compute trên draft, commit hoặc rollback:**
 
 ```
                     ┌─ commit_raw() PASS ──► Ghi vào Live Store ✓
@@ -1613,11 +1669,9 @@ Cả accept path và reject path đều **zero allocation** nhờ pre-allocated 
 
 ---
 
-### 4.5. Triết lý Mô phỏng Vi Cấu Trúc (Realistic Paper Trading)
+### 4.5. Microstructure Simulation (Paper Trading Realism)
 
-**Vấn đề**: Paper trading thông thường khớp lệnh ở mid-price ngay lập tức → tạo ảo tưởng lợi nhuận. Khi chạy live, slippage + latency + toxicity ăn mòn toàn bộ alpha.
-
-**Giải pháp Kairos**: Paper Engine bắt chước hành vi thị trường thực:
+**Mục tiêu:** Loại bỏ Simulation-to-Reality Gap — Paper Engine phải tái hiện đủ 5 yếu tố market microstructure để backtest có thể dùng làm evidence cho live deployment:
 
 | Yếu tố | Cách mô phỏng | Tác động |
 |--------|--------------|---------|
@@ -1629,11 +1683,9 @@ Cả accept path và reject path đều **zero allocation** nhờ pre-allocated 
 
 ---
 
-### 4.6. Triết lý Dual-Channel Failsafe (Chống Single Point of Failure)
+### 4.6. Dual-Channel Failsafe (Chống Single Point of Failure)
 
-**Vấn đề**: Watchdog 1 kênh ZMQ: ZMQ crash = mất giám sát = bot giao dịch mất kiểm soát.
-
-**Giải pháp Kairos**: 2 kênh hoàn toàn độc lập:
+**Thiết kế:** Watchdog dùng 2 kênh hoàn toàn độc lập. Trigger chỉ khi **CẢ HAI** miss ≥ threshold — loại bỏ false-positive từ network glitch đơn lẻ:
 
 ```
 Thread 5 ──► ZMQ PUB (port 5559)  ──► Watchdog SUB  ──┐
@@ -1645,11 +1697,11 @@ Watchdog chỉ kích hoạt Kill Switch khi **CẢ HAI** kênh mất tín hiệu
 
 ---
 
-### 4.7. Triết lý Clock Integrity (Chống Exchange Exploit)
+### 4.7. Clock Integrity — TimeValidator
 
-**Vấn đề**: Clock skew 1ms khiến OFI/EMA tính sai → tín hiệu sai → lệnh sai hướng. Tệ hơn: sàn có thể exploit độ trễ (last-look advantage).
+**Invariant:** Clock skew > 1ms khiến OFI/EMA nhận tick lộn thứ tự → signal có thể đảo dấu. Hệ thống phải giảm exposure trước khi tín hiệu sai gây lệnh ngược chiều.
 
-**Giải pháp Kairos**: `TimeValidator` 3 tầng — PTP → NTP → Monotonic, với graceful degradation:
+**`TimeValidator` 3 tầng — PTP → NTP → Monotonic, graceful degradation:**
 
 ```python
 # Degradation chain trong Thread 1 (hot-path):
@@ -1666,7 +1718,7 @@ if _tv_mult < 1.0:                # DEGRADED: PTP crash
         self._drop("time_degraded")
 ```
 
-> **Triết lý**: Không bao giờ dừng ngay — luôn degrade gracefully. Giảm exposure từ từ để tránh cascade liquidation.
+> **Thiết kế:** Không hard-stop ngay — degrade gracefully theo bậc để tránh cascade liquidation. `capital_multiplier = 0.2` khi DEGRADED (giảm 80% size); `= 0.0` khi CRITICAL (đóng băng hoàn toàn).
 
 ---
 
@@ -1747,6 +1799,64 @@ if _tv_mult < 1.0:                # DEGRADED: PTP crash
 6. **AI & Model Development** — Triển khai ONNX inference engine trong `hoc_may/suy_luan/`. Tích hợp Transformer-based Alpha model.
 7. **Grafana Integration** — Kết nối `SystemMetricsReporter`, `LatencyReporter`, `ExecutionWrapper.snapshot()`, và `PnLAggregator.dump_crash_state()` vào Grafana qua Prometheus exporter.
 8. **Multi-Strategy Execution & MLOps** — Kích hoạt `danh_ba_chien_luoc/` để chạy nhiều Alpha strategies song song, đồng thời tích hợp ML Monitoring (`sai_lech_dac_trung/`, `sai_lech_du_doan/`) để auto-disable model khi prediction drift vượt ngưỡng.
+
+---
+
+## 8. ✅ Kiểm Tra Sẵn Sàng Production (Production Readiness Checklist)
+
+Phần này liệt kê 20 điểm kiểm tra tối thiểu trước khi triển khai Kairos hoặc bất kỳ hệ thống tham khảo từ Kairos cho môi trường real-money. Mỗi mục là một **gap đã xác định** trong kiến trúc hiện tại — không phải lý thuyết mà là điểm cụ thể cần bổ sung trước khi xem là production-safe.
+
+### Nhóm 1: Tính Đúng Đắn Sự Kiện (Event Correctness)
+
+| # | Điểm kiểm tra | Trạng thái hiện tại | Hành động cần thiết |
+|---|---------------|---------------------|---------------------|
+| 1 | Mọi event mang `sequence_id`, `event_time`, và `ingest_time` tách biệt | Thiếu `sequence_id` chuẩn hóa trên toàn pipeline | Thêm field `seq` tăng dần monotonic vào mọi event schema (`_FeatureEventRaw`, `_SignalEventRaw`) |
+| 2 | Gap detection trên mọi ZMQ SUB socket | ZMQ HWM = 10,000 drop messages silently | Detect gap từ `sequence_id`; policy rõ cho gap: `degraded` hoặc `halt`, không tiếp tục im lặng |
+| 3 | Drop event trên luồng causal (fill, risk update) không bị xử lý như coalescing | Shedder và HWM có thể drop fill/risk events | Phân loại event trước khi drop: luồng causal không được drop; nếu overflow → `halt` thay vì `popleft` |
+| 4 | Chính sách out-of-order được định nghĩa và test per stream | ROB window xử lý out-of-order nhưng không có policy rõ sau khi window hết hạn | Định nghĩa: event ngoài cửa sổ ROB bị accept muộn, reject, hay trigger `degraded`; thêm test cho từng trường hợp |
+
+### Nhóm 2: Tính Bền Vững State (Persistence & Replay)
+
+| # | Điểm kiểm tra | Trạng thái hiện tại | Hành động cần thiết |
+|---|---------------|---------------------|---------------------|
+| 5 | Mọi mutation state trọng yếu (position, order, PnL, balance) phải đi qua WAL trước side effect | Một số mutation path có thể bypass WAL (ví dụ: reconciler direct-write vào state) | Audit toàn bộ write path; đảm bảo không có `state.update_*()` nào thiếu WAL entry tương ứng |
+| 6 | Replay từ snapshot + WAL luôn rebuild ra cùng logical state | Replay được implement nhưng chưa có invariant test xác nhận | Viết test: inject fault sau mỗi WAL entry type → restart → assert state == pre-fault state |
+| 7 | WAL rotation đảm bảo không mất entry khi swap | `rotate_wal()` atomic swap nhưng caller chịu trách nhiệm archive WAL cũ | Thêm bước verify trong rotate: new WAL có đủ active order snapshot trước khi swap; test crash-during-rotate |
+
+### Nhóm 3: Tính Đồng Thời (Concurrency)
+
+| # | Điểm kiểm tra | Trạng thái hiện tại | Hành động cần thiết |
+|---|---------------|---------------------|---------------------|
+| 8 | SPSC ring buffer có runtime enforcement single writer / single reader | SPSC là assumption thiết kế, không có runtime guard | Thêm `assert` / `threading.get_ident()` guard tại `produce()` và `consume()` entry points; fail-fast nếu vi phạm |
+| 9 | OCC trong `pnl_tracker.py` đảm bảo operation idempotent và retry-safe | OCC reads `scale_ref.version` ngoài `sym_lock` → window race với `trigger_scale_downgrade` | Verify: mọi retry trong OCC loop có thể áp lại mà không có side effect; stress test với concurrent scale change |
+| 10 | Thread + asyncio ordering được document và stress test | Thread 2 nhận từ ring buffer; event arrival order ≠ request completion order | Document rõ: thread 1 push → thread 2 pop là FIFO; nhưng HTTP response ordering không đảm bảo; test race condition |
+
+### Nhóm 4: Kế Toán (Accounting)
+
+| # | Điểm kiểm tra | Trạng thái hiện tại | Hành động cần thiết |
+|---|---------------|---------------------|---------------------|
+| 11 | PnL multi-asset được normalize về base currency trước khi cộng dồn | `PnLAggregator` hiện dùng integer-scaled arithmetic nhưng không có lớp currency normalization | Thêm `CurrencyNormalizer`: convert mọi PnL về USDT bằng mark price; test với portfolio có BTC-margined + USDT-margined |
+| 12 | Funding sign convention được verify và test per exchange | `BINANCE/BYBIT` negate, `OKX` pass-through đã implement trong `FundingCollector` | Thêm exchange mock test với known funding payment: assert sign sau normalization; document trong `universe.yaml` |
+| 13 | Fee model (maker/taker/rebate/inverse product) được test so với exchange statement | Fee anomaly detection có (fee > 1% notional → warning) nhưng không có cross-check với exchange API | Viết reconciliation test: sum fees trong WAL vs sum fees từ exchange `/api/v1/income`; alert khi diverge > threshold |
+
+### Nhóm 5: Kill Switch & State Machine (Risk Formalization)
+
+| # | Điểm kiểm tra | Trạng thái hiện tại | Hành động cần thiết |
+|---|---------------|---------------------|---------------------|
+| 14 | Global halt flag được kiểm tra atomic bởi mọi code path có thể phát lệnh | Watchdog set `system.KILLED` file; nhưng check là file I/O, không phải in-memory atomic flag | Thêm `threading.Event` / `multiprocessing.Event` `_halt_flag`; mọi `protected_call()` check flag trước khi acquire RateLimiter |
+| 15 | Kill switch trigger → toàn bộ execution path dừng, không có lệnh mới | Watchdog trigger market-close nhưng không đảm bảo ExecutionGateway ring buffer đã drain | Test: trigger kill → assert không có `ORDER_SENT` WAL entry nào sau thời điểm kill |
+| 16 | State machine `INIT → SYNC → RUNNING → HALT` được enforce, không thể skip | State transitions không được formalize; ví dụ có thể `RUNNING` khi WAL replay chưa xong | Implement `EngineState` enum; mọi transition phải qua method rõ ràng với pre/post condition check |
+| 17 | Kill consistency: không có execution path nào có thể phát lệnh khi engine ở state `HALT` | Risk Gate check state nhưng các path khác (reconciler, self-heal) không kiểm tra `HALT` | Audit mọi `adapter.place_order()` call site; bọc trong `_guard_halt()` trước khi gọi |
+
+### Nhóm 6: Bất Biến & Kiểm Thử (Integrity & Testing)
+
+| # | Điểm kiểm tra | Trạng thái hiện tại | Hành động cần thiết |
+|---|---------------|---------------------|---------------------|
+| 18 | Runtime invariant checks cho order, position, balance, PnL chạy ở mỗi checkpoint | `verify_integrity()` implement nhưng không được schedule chạy định kỳ | Gọi `verify_integrity()` sau mỗi WAL checkpoint và sau mỗi reconciler cycle; log violation với severity |
+| 19 | Tần suất reconciliation với exchange tăng tự động khi phát hiện divergence | Reconciler chạy cố định 60s; drift detection chạy 60s | Implement adaptive schedule: 1 violation → 30s; 2 violations → 10s; 3 violations → kill switch |
+| 20 | Chaos/fault injection và replay stress test đã pass | `test_chaos_risk.py` có 4 adversarial scenarios; chưa có restart-mid-replay test | Thêm: kill-during-WAL-write, restart-during-reconciliation, clock-jump test, 24h stream replay, concurrent-fills race stress |
+
+> Danh sách này không phải "nice to have" — mỗi mục đại diện cho một failure mode đã được xác định qua code review. Triển khai Kairos cho tiền thật trước khi tất cả 20 điểm được kiểm tra và pass là rủi ro có thể định lượng được.
 
 ---
 
