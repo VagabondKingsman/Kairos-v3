@@ -1210,7 +1210,7 @@ Toàn bộ runtime parameters được hợp nhất vào 3 file YAML phẳng, ch
 
 **Hợp đồng hiệu năng:** `risk_gate.check()` hoàn thành trong **< 50µs** trên hot-path. File `risk_gate.py` — 605 dòng.
 
-> 📸 **[BẰNG CHỨNG CẦN THIẾT]** *Loại: microbenchmark.* Chèn HdrHistogram P50/P99 của `check()` dưới tải ≥ 1,000 calls/s tại đây. Target: P99 < 50µs. Xem `giam_sat/theo_doi_do_tre/tracker.py` — `signal_to_order` histogram.
+<img width="1920" height="1080" alt="image" src="https://github.com/user-attachments/assets/5f9c5cce-16f7-4580-920c-394daa564500" />
 
 #### Pre-trade Risk Gate — `check()` < 50µs
 
