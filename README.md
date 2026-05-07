@@ -1164,7 +1164,7 @@ Death Spiral Prevention: Nếu không có request trong `recovery_window_s` (30s
 
 ```
 CLOSED ──[weight_accum ≥ threshold]──► OPEN ──[recovery_timeout]──► HALF_OPEN
-                                                                        │
+                                                                          │
               ◄──────────[probe success]──────────────────────────────────┘
               ──────────[probe failure]──────────────────────────────► OPEN
 ```
