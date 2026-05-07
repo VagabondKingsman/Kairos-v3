@@ -1,6 +1,6 @@
 <div align="center">
  
-<img width="224" height="224" alt="image" src="https://github.com/user-attachments/assets/5a1b5bcf-e6bb-4d92-a4a7-0c55697ba30e" />
+<img width="124" height="124" alt="image" src="https://github.com/user-attachments/assets/bf450abd-f468-43fa-9750-464e3ef95651" />
 
 # KAIROS v3.0
 ### **Hệ thống giao dịch định lượng (Quant Trading) tự động hóa toàn diện, với kiến trúc độ trễ cực thấp (Ultra-Low Latency) lấy cảm hứng từ các tiêu chuẩn HFT (HFT-Inspired)**
