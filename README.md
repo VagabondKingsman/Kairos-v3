@@ -14,7 +14,7 @@
 | Trường | Giá trị |
 |--------|---------|
 | Phiên bản tài liệu | v3.0 |
-| Ngày cập nhật | 2026-05-06 |
+| Ngày cập nhật | 2026-05-07 |
 | Trạng thái | In Development — không dùng làm production reference khi chưa pass Production Checklist (§8) |
 | Phạm vi | Architecture specification & implementation reference cho KAIROS v3 |
 | Test coverage | 43 unit/integration tests — `test/` directory |
