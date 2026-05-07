@@ -1568,7 +1568,9 @@ Phần này ghi lại các quyết định thiết kế có trade-off rõ ràng 
 
 **Quy tắc:** Pre-allocation 100% tại `__init__`. Hot-path chỉ ghi đè lên vùng nhớ đã cấp phát — không tạo `dict`, `list`, hay `bytes` mới.
 
-> 📸 **[BẰNG CHỨNG CẦN THIẾT]** *Loại: GC pause profiler.* Chèn output `gc.get_stats()` delta và `gc.callbacks` trace qua 10,000 ticks trên Thread 1 tại đây. Xác nhận: `gc.get_count()` không tăng trong hot loop.
+
+<img width="1920" height="1080" alt="image" src="https://github.com/user-attachments/assets/c7223510-0a99-4729-9998-20c4128f6f92" />
+
 
 ```python
 # ❌ ANTI-PATTERN: Tạo dict mới MỖI tick → GC pressure
@@ -1598,7 +1600,7 @@ self._scratch_payload.qty   = 1.0
 
 > **Kết quả**: Thread 1 (Hot-Path) gọi `gc.disable()` hoàn toàn. Không có GC nào chạy trên thread xử lý tín hiệu.
 
-> 📸 **[BẰNG CHỨNG CẦN THIẾT]** *Loại: memory profiler + GC stats.* Chèn output `python -m tracemalloc` hoặc `objgraph.show_growth()` trên Thread 1 sau 10,000 ticks tại đây. Xác nhận: `gc.get_count()` không tăng trên Thread 1, allocation delta = 0 sau warm-up.
+<img width="1920" height="1080" alt="image" src="https://github.com/user-attachments/assets/677f87c2-4f93-473c-b5d6-39f9bb66df8e" />
 
 ---
 
@@ -1625,7 +1627,8 @@ class _WALEntry(ctypes.LittleEndianStructure):
     ]   # Total: 8+8+4+4+32+4+4 = 64 bytes ✓
 ```
 
-> 📸 **[BẰNG CHỨNG CẦN THIẾT]** *Loại: perf benchmark.* Chèn kết quả `perf stat` hoặc `valgrind --tool=cachegrind` so sánh cache-miss rate của aligned vs unaligned struct access tại đây. Xác nhận `_WALEntry` không gây L1 cache miss khi truy cập tuần tự.
+<img width="1920" height="1080" alt="image" src="https://github.com/user-attachments/assets/e74ac464-d0ec-4364-96e6-406d7a41e735" />
+
 
 ---
 
@@ -1635,7 +1638,7 @@ class _WALEntry(ctypes.LittleEndianStructure):
 
 **Thiết kế:** `ctypes.memmove` copy trực tiếp 128 bytes ở tốc độ C (~0.05µs, nhanh gấp **20-40×**):
 
-> 📸 **[BẰNG CHỨNG CẦN THIẾT]** *Loại: microbenchmark.* Chèn output `python -m timeit` so sánh Python loop vs `ctypes.memmove` cho 128-byte copy tại đây. Expected: memmove ~0.04-0.06µs, loop ~1.2-2.0µs.
+<img width="1920" height="1080" alt="image" src="https://github.com/user-attachments/assets/d24c3875-231a-450d-bde9-33841a69d72e" />
 
 ```python
 # ❌ Python loop: 16 objects tạm, ~1.5µs
