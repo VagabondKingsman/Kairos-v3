@@ -14,7 +14,7 @@
 | Trường | Giá trị |
 |--------|---------|
 | Phiên bản tài liệu | v3.0 |
-| Ngày cập nhật | 2026-05-07 |
+| Ngày cập nhật | 2026-05-11 |
 | Trạng thái | In Development — không dùng làm production reference khi chưa pass Production Checklist (§8) |
 | Phạm vi | Architecture specification & implementation reference cho KAIROS v3 |
 | Test coverage | 43 unit/integration tests — `test/` directory |
@@ -359,6 +359,11 @@ KAIROS v3/
 # 🚀 10. KỊCH BẢN VẬN HÀNH (SCRIPTS)
 # ==========================================
 └── kich_ban/
+    ├── __init__.py                     # Package marker
+    ├── khoi_dong.py                    # Stack launcher lõi: preflight, process manager, shutdown (147 dòng)
+    ├── khoi_dong_live.py               # Entry point tiền thật: `make live`
+    ├── khoi_dong_paper.py              # Entry point tiền ảo: `make paper-launch`
+    └── dao_tao_lai_model.py            # Re-train ML model pipeline
 ```
 
 ---
@@ -384,6 +389,7 @@ KAIROS v3/
 | Funding Collector | `funding_collector.py` | 266 | ✅ Implemented | `test_position_funding.py` |
 | Research / Replay Engine | `nghien_cuu/` | — | 🔧 WIP | — |
 | ML / ONNX Inference | `hoc_may/suy_luan/` | — | 🔧 WIP | — |
+| Stack Launchers | `kich_ban/` | 147 | ✅ Implemented | — |
 
 <img width="1920" height="1080" alt="image" src="https://github.com/user-attachments/assets/7208720b-877d-4960-8e0d-1f991cbd9ca1" />
 
