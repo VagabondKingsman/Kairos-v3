@@ -14,10 +14,10 @@
 | Trường | Giá trị |
 |--------|---------|
 | Phiên bản tài liệu | v3.0 |
-| Ngày cập nhật | 2026-05-11 |
+| Ngày cập nhật | 2026-05-12 |
 | Trạng thái | In Development — không dùng làm production reference khi chưa pass Production Checklist (§8) |
 | Phạm vi | Architecture specification & implementation reference cho KAIROS v3 |
-| Test coverage | 43 unit/integration tests — `test/` directory |
+| Test coverage | 107 unit/integration tests — `test/` directory |
 
 <div align="left">
  
@@ -177,7 +177,8 @@ KAIROS v3/
 │   ├── thuc_thi/                       # Live execution state (WAL + snapshot + sessions)
 │   │   ├── nhat_ky_wal/                # kairos.wal, wal_log.jsonl, funding_dedup.jsonl
 │   │   ├── snapshot/                   # state.json (KairosState atomic checkpoint)
-│   │   └── phien_giao_dich/            # sessions_YYYY-MM.ndjson / .parquet (P&L ledger)
+│   │   ├── phien_giao_dich/            # sessions_YYYY-MM.ndjson / .parquet (P&L ledger)
+│   │   └── audit/                      # [NEW] Exit audit trail (daily rotation, 30-day retention)
 │   ├── gia_lap/                        # Paper trading output
 │   │   ├── paper_wal.jsonl             # Paper WAL
 │   │   ├── paper_snapshot.json         # Paper state snapshot
@@ -185,8 +186,9 @@ KAIROS v3/
 │   │   └── parquet/                    # Converted Parquet (audit_to_parquet)
 │   ├── giam_sat/                       # Monitoring & alerting output
 │   │   └── canh_bao/                   # Alert fallback logs (RotatingFileHandler)
-│   └── he_thong/                       # System sentinel files
-│       └── system.KILLED               # Kill-switch JSON (blocks all Gateway restarts)
+│   └── he_thong/                       # System sentinel files (gitignored — runtime only)
+│       ├── system.KILLED               # Kill-switch JSON (blocks all Gateway restarts)
+│       └── FLATTEN_LOCK                # [NEW] Written by EmergencyFlattener (blocks all new trades)
 │
 # ==========================================
 # ⚡ 3. ĐỘNG CƠ DỮ LIỆU (DATA ENGINE)
@@ -266,11 +268,25 @@ KAIROS v3/
 │   │   ├── funding_collector.py        # [NEW] Periodic Funding Collection + NDJSON Dedup
 │   │   ├── position_sync.py            # [NEW] Startup Sync + Drift Detection + Healing
 │   │   ├── session_manager.py          # [NEW] Daily P&L Session Rotation + Archive
-│   │   └── ke_toan_pnl/                # [NEW] Accounting: Realized/Unrealized PnL
-│   │       ├── pnl_aggregator.py       # Root PnL Orchestrator (719 dòng)
-│   │       ├── pnl_tracker.py          # Integer-Scaled Realized PnL + OCC
-│   │       ├── fee_ledger.py           # Trade Fees + Funding Payments
-│   │       └── mark_to_market.py       # Live Mark Price + Unrealized PnL
+│   │   ├── ke_toan_pnl/                # [NEW] Accounting: Realized/Unrealized PnL
+│   │   │   ├── pnl_aggregator.py       # Root PnL Orchestrator (719 dòng)
+│   │   │   ├── pnl_tracker.py          # Integer-Scaled Realized PnL + OCC
+│   │   │   ├── fee_ledger.py           # Trade Fees + Funding Payments
+│   │   │   └── mark_to_market.py       # Live Mark Price + Unrealized PnL
+│   │   └── thoat_vi_the/               # [NEW] Exit Management System (EMS Exit Layer)
+│   │       ├── exit_coordinator.py     # [NEW] State machine + strategy dispatch (475 dòng)
+│   │       ├── position_state.py       # [NEW] FLAT→OPEN→CLOSING→PARTIAL→CLOSED→QUARANTINED
+│   │       ├── position_sizer.py       # [NEW] Anti-flip qty calculator
+│   │       ├── audit_logger.py         # [NEW] Append-only exit audit trail (daily rotation)
+│   │       ├── base_strategy.py        # [NEW] ExitStrategy ABC, ExitDecision, ExitContext
+│   │       ├── composite.py            # [NEW] First-trigger-wins by urgency
+│   │       └── strategies/
+│   │           ├── fixed_percent.py    # [NEW] SL/TP fixed %
+│   │           ├── atr_based.py        # [NEW] ATR-based SL/TP (per-symbol state)
+│   │           ├── trailing_stop.py    # [NEW] Trailing stop with activation threshold
+│   │           ├── breakeven.py        # [NEW] Move SL to breakeven after trigger %
+│   │           ├── partial_exit.py     # [NEW] Partial close at multiple TP levels
+│   │           └── time_based.py       # [NEW] Max hold time forced exit
 │   ├── danh_ba_chien_luoc/             # (STRATEGY REGISTRY)
 │   ├── quan_ly_lenh/                   # [NEW] (OMS) Order Management System
 │   │   ├── order_book.py               # In-Memory Sổ Lệnh + Per-Symbol Lock (757 dòng)
@@ -280,7 +296,7 @@ KAIROS v3/
 │   │   ├── ems.py
 │   │   └── execution_risk_engine.py
 │   ├── theo_doi_do_tre/                # (LATENCY TRACKER)
-│   └── vong_lap_su_kien.py             # (Event Loop) — 828 dòng, trái tim hệ thống
+│   └── vong_lap_su_kien.py             # (Event Loop) — 1250 dòng, trái tim hệ thống
 │
 # ==========================================
 # 🚨 7. LƯỚI BẢO VỆ (RISK SYSTEM)
@@ -301,6 +317,7 @@ KAIROS v3/
 │   └── nguoi_gac_cong/                 # (Watchdog) Kill Switch
 │       └── watchdog/
 │           ├── watchdog.py
+│           ├── emergency_flattener.py  # [NEW] Standalone REST flatten Binance/OKX/Bybit (438 dòng)
 │           └── adapters/
 │               ├── lite_rest.py
 │               └── war_grade_rest.py
@@ -344,8 +361,8 @@ KAIROS v3/
 │       └── tracker.py                  # 4-segment latency tracker
 ├── kiem_thu/
 │   └── san_gia_lap/                    # Mock Exchange
-├── test/                               # Unit & Integration Tests
-│   ├── test_live_runner.py             # [NEW] Live Runner — 14 components, 1217 dòng
+├── test/                               # Unit & Integration Tests (107 tests total)
+│   ├── test_live_runner.py             # Live Runner — 14 components, 1217 dòng
 │   ├── test_chaos_risk.py              # Pre-trade Risk Gate adversarial scenarios
 │   ├── test_execution_pipeline.py      # Execution layer: Retry, TokenBucket, RiskEngine, Adapters
 │   ├── test_feature_layer.py           # Feature engine pipeline
@@ -353,7 +370,10 @@ KAIROS v3/
 │   ├── test_signal_engine.py           # ML signal engine
 │   ├── test_profiler.py                # Performance profiling
 │   ├── test_state.py                   # KairosState WAL/snapshot
-│   └── test_ws_gateway_fixes.py        # WebSocket gateway regression
+│   ├── test_ws_gateway_fixes.py        # WebSocket gateway regression
+│   ├── test_position_sizer.py          # [NEW] PositionSizer — 14 tests (qty, anti-flip, lot rounding)
+│   ├── test_strategies.py              # [NEW] Exit strategies — 32 tests (6 strategies + composite)
+│   └── test_exit_coordinator.py        # [NEW] ExitCoordinator — 18 tests (state machine, cooldown, quarantine)
 │
 # ==========================================
 # 🚀 10. KỊCH BẢN VẬN HÀNH (SCRIPTS)
@@ -376,7 +396,7 @@ KAIROS v3/
 |--------|-----------|------|------------|------|
 | Live Orchestrator | `live_runner.py` | 1021 | ✅ Implemented | `test_live_runner.py` (14 components) |
 | Paper EMS Adapter | `paper_ems_adapter.py` | 833 | ✅ Implemented | `test_paper_adapter_queries.py` (10 tests) |
-| Execution Gateway | `vong_lap_su_kien.py` | 828 | ✅ Implemented | `test_execution_pipeline.py` |
+| Execution Gateway | `vong_lap_su_kien.py` | 1250 | ✅ Implemented | `test_execution_pipeline.py` |
 | OMS — OrderBook | `order_book.py` | 757 | ✅ Implemented | — |
 | PnL Aggregator | `pnl_aggregator.py` | 719 | ✅ Implemented | `test_session_pnl.py` (20 tests) |
 | Session Manager | `session_manager.py` | 662 | ✅ Implemented | `test_session_pnl.py` |
@@ -387,6 +407,11 @@ KAIROS v3/
 | Reconciler | `reconciler.py` | 400 | ✅ Implemented | — |
 | Durable WAL | `durable_wal.py` | 355 | ✅ Implemented | `test_state.py` |
 | Funding Collector | `funding_collector.py` | 266 | ✅ Implemented | `test_position_funding.py` |
+| Exit Coordinator | `thoat_vi_the/exit_coordinator.py` | 475 | ✅ Implemented | `test_exit_coordinator.py` (18 tests) |
+| Emergency Flattener | `watchdog/emergency_flattener.py` | 438 | ✅ Implemented | — |
+| Position State | `thoat_vi_the/position_state.py` | 91 | ✅ Implemented | — |
+| Position Sizer | `thoat_vi_the/position_sizer.py` | 65 | ✅ Implemented | `test_position_sizer.py` (14 tests) |
+| Exit Strategies (×6) | `thoat_vi_the/strategies/` | 381 | ✅ Implemented | `test_strategies.py` (32 tests) |
 | Research / Replay Engine | `nghien_cuu/` | — | 🔧 WIP | — |
 | ML / ONNX Inference | `hoc_may/suy_luan/` | — | 🔧 WIP | — |
 | Stack Launchers | `kich_ban/` | 147 | ✅ Implemented | — |
@@ -734,9 +759,18 @@ Bộ não của hệ thống. Trong khi các quy tắc rủi ro và thực thi l
 
 ### 3.6. ⚔️ Thực Thi Chiến Dịch (Execution Core)
 
-**Trách nhiệm:** Nhận `SignalEvent` từ ZMQ bus, qua 7 pre-trade gates, đẩy vào SPSC ring buffer, worker sizing lệnh và submit qua EMS. File chính `vong_lap_su_kien.py` — 828 dòng.
+**Trách nhiệm:** Nhận `SignalEvent` từ ZMQ bus, qua 7 pre-trade gates, đẩy vào SPSC ring buffer, worker sizing lệnh và submit qua EMS. File chính `vong_lap_su_kien.py` — 1250 dòng.
 
 **Hợp đồng hiệu năng:** signal-to-ring-write < 10µs (Thread 1 hot-path, GC disabled). ring-read-to-HTTP-submit latency không bị bounded (network dependent).
+
+
+#### ExitCoordinator — Quản Lý Thoát Vị Thế
+
+`ExitCoordinator` (`thoat_vi_the/exit_coordinator.py`, 475 dòng) là state machine per-symbol vận hành trên Thread 2 event loop, chịu trách nhiệm hoàn toàn cho việc đóng vị thế. Khi Thread 3 nhận MarkPrice mới, nó gọi `call_soon_threadsafe(ec.on_price_tick, sym, price, ts)` để dispatch vào Thread 2 — không bao giờ block hot-path.
+
+Mỗi symbol có trạng thái `FLAT → OPEN → CLOSING → PARTIAL → CLOSED → QUARANTINED/ERROR`. Khi một lệnh mở vị thế fill thành công (trong `_fire()`), `on_position_opened()` được gọi để chuyển sang `OPEN`. Mỗi price tick, coordinator đánh giá tất cả exit strategies (FixedPercent, ATR-Based, TrailingStop, Breakeven, PartialExit, TimeBased) và đặt lệnh `MARKET reduce_only=True` trực tiếp qua adapter — **bypassing EMS hoàn toàn** vì lệnh đóng không cần pre-trade risk gate.
+
+`EmergencyFlattener` (`watchdog/emergency_flattener.py`, 438 dòng) là fallback cuối cùng: được Watchdog gọi khi kích hoạt kill switch, đóng tất cả vị thế đang mở trên mọi sàn và ghi `FLATTEN_LOCK` để chặn vĩnh viễn mọi lệnh mới cho đến khi con người can thiệp.
 
 #### Kiến trúc 5-Thread (`ExecutionGateway`)
 
@@ -1698,7 +1732,7 @@ Cả accept path và reject path đều **zero allocation** nhờ pre-allocated 
 
 ```
 Thread 5 ──► ZMQ PUB (port 5559)  ──► Watchdog SUB  ──┐
-             │                                        ├─ BOTH miss ≥ N → KILL
+             │                                        ├─ BOTH miss ≥ N → KILL                                   |
 Thread 5 ──► os.utime(alive_path) ──► Watchdog stat ──┘
 ```
 
@@ -1872,3 +1906,4 @@ Phần này liệt kê 20 điểm kiểm tra tối thiểu trước khi triển 
 > **Kairos v3.0** — *"Thời điểm quyết định"* (Καιρός)
 >
 > Mọi microsecond đều có giá trị. Mọi dòng code đều có mục đích.
+
