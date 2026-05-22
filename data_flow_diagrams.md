@@ -1,6 +1,6 @@
-# KAIROS v3 — Sơ đồ luồng dữ liệu & Workflow
+# KAIROS v3.2 — Sơ đồ luồng dữ liệu & Workflow
 
-> **Ký hiệu:** ✅ = đã có trong codebase | ❌ = cần build | 🔗 = tái dùng module có sẵn
+> **Ký hiệu:** ✅ = đã có | ❌ = cần build | 🔗 = tái dùng module có sẵn | **[DEFER]** = không cần cho first alpha
 
 ---
 
@@ -9,161 +9,181 @@
 ```mermaid
 flowchart TB
     subgraph SOURCE["☁️ Nguồn dữ liệu"]
-        VENDOR["Tardis.dev / Databento\nHistorical tick + klines + L2\n(mua, không tự cào REST)"]
-        WS_LIVE["WebSocket Gateway ✅\nbinance_ws / bybit_ws / okx_ws\n→ raw stream nội bộ"]
-        REST_FB["REST API ✅\nbinance_rest / bybit_rest\nChỉ dùng làm fallback\nkhi WS bị gap"]
+        WS_LIVE["WebSocket Gateway ✅\nbinance_ws / bybit_ws / okx_ws\nthu_thap/websocket/"]
+        REST_FB["REST API ✅\nthu_thap/rest_api/\nGap fill fallback only"]
     end
 
-    subgraph INGEST["📦 Ingest Layer ✅"]
+    subgraph INGEST["📦 M-D1: Raw Ingestion ✅ (~90%)"]
         direction TB
-        OHLC["xu_ly_dong/bo_loc/ohlc_engine.py"]
+        OHLC["xu_ly_dong/bo_loc/ohlc_engine.py\nBar boundary: left-inclusive right-exclusive\nbar_start_ns <= event_time_ns < bar_end_ns"]
         OB["xu_ly_dong/bo_loc/orderbook_engine.py"]
-        RAW[("ho_du_lieu/tho/\n*.parquet — raw, immutable")]
+        RAW[("ho_du_lieu/tho/\n{exchange}/{symbol}/year={Y}/month={M}/data.parquet\nImmutable — không sửa sau write\nschema_version: int8 mandatory")]
     end
 
-    subgraph BATCH_PIPELINE["🔧 Batch Pipeline ❌ (build Phase 1)"]
+    subgraph DATA_CORE["🗝️ DATA CORE"]
         direction TB
-        DL["xu_ly_lo/downloader.py\nVendor parquet + WS stream merge"]
-        RECON["xu_ly_lo/reconcile_gaps.py\nNightly — WS stream primary\nREST fallback nếu WS gap\n⚠️ data_source flag = REST_fallback"]
-        CL["xu_ly_lo/cleaner.py\ndedup • gap flag • winsorize features\n⚠️ KHÔNG ffill bar prices/returns"]
-        LF["xu_ly_lo/liquidity_filter.py\nL2 depth post-spoofing-discount\nFilter universe TRƯỚC backtest"]
-        DREG["xu_ly_lo/dataset_registry.py\nhash chain • lineage • PiT universe\nmarket structure events"]
-        CLEAN[("ho_du_lieu/da_xu_ly/\n*.parquet — cleaned + flagged")]
+        subgraph MD0["📋 M-D0: Data Lineage ❌ (Phase 0 — BUILD FIRST)"]
+            direction TB
+            DSREC["dong_co_du_lieu/quan_ly_phien_ban/dataset_record.py\nDatasetRecord(frozen, UUID, SHA-256, lineage DAG)\nas_of_feature_snapshot(date) → dataset_id\nMọi backtest PHẢI log dataset_id_used"]
+            LINREG["dong_co_du_lieu/quan_ly_phien_ban/lineage_registry.py\nAppend-only JSON registry\nquery by dataset_id + date\nfeature_logic_hash tracking"]
+            DSREC --- LINREG
+        end
+
+        subgraph GAP["🔧 M-D2+D3: Gap & Universe ❌ (Phase 0)"]
+            direction TB
+            GAPDET["xu_ly_lo/gap_detector.py\nScan missing bars, expected vs actual"]
+            RESTFILL["xu_ly_lo/rest_filler.py\ngap ≤ 3 bars → REST fill, is_gap_filled=True\ngap > 3 bars → data_quality=3"]
+            PITUNIV["xu_ly_lo/pit_universe.py\nExpanding window — không look-ahead\nDelisting = -100% return, không drop"]
+            SYMREMAP["xu_ly_lo/symbol_remapper.py\nTrack exchange renames (DEFI-PERP→DEFIUSDT)"]
+            SCHVAL["xu_ly_lo/schema_validator.py\nSCHEMA_REGISTRY per dataset type\nschema_version mandatory — backward compat read"]
+            EXCMETA["cau_hinh/exchange_metadata.yaml ✅\nSINGLE SOURCE OF TRUTH:\nfunding schedule, min_order_size,\nfee_tiers, liquidation engine\nINV-EXC.1: adapters reference đây, không hardcode"]
+            CLEAN[("ho_du_lieu/da_xu_ly/\n+ is_gap_filled, gap_duration_s, data_quality\nschema_version field mandatory")]
+            GAPDET --> RESTFILL --> CLEAN
+            PITUNIV --> CLEAN
+            SYMREMAP --> GAPDET
+            SCHVAL --> CLEAN
+            EXCMETA -.->|"reference"| GAPDET
+        end
     end
 
-    subgraph FEATURE_LAYER["🔩 Feature Layer"]
+    subgraph FEATURE_LAYER["🔩 M-D4: Feature Cache ❌ [DEFER — Phase 1]"]
         direction TB
-        FB["xu_ly_lo/feature_builder.py ❌\nbuild_batch_features() gọi\nCÙNG feature_registry với live"]
-        FR["ong_dan_dac_trung/online/feature_registry.py ✅\nBit-exact live và batch"]
-        IE["ong_dan_dac_trung/online/incremental_engine.py ✅\n(live realtime)"]
-        FEAT[("ho_du_lieu/kho_dac_trung/offline/\nfeatures_*.parquet ❌")]
-        MEM[("ho_du_lieu/kho_dac_trung/online/memory_store.py ✅\nlive in-memory")]
+        FB["xu_ly_lo/feature_builder.py\nbuild_batch_features()\nGọi CÙNG feature_registry với live"]
+        FR["ong_dan_dac_trung/online/feature_registry.py ✅\nBit-exact: live == batch tolerance 1e-6"]
+        FSPEC["nghien_cuu/khung_alpha/feature_spec.py ❌ (Phase 1)\nFeatureSpec dataclass registry\nMọi feature phải có FeatureSpec entry\ntrước khi dùng trong T0/T1/T2\npit_safe=True verified"]
+        IE["ong_dan_dac_trung/online/incremental_engine.py ✅\nLive realtime"]
+        FEAT[("ho_du_lieu/kho_dac_trung/offline/\nfeatures_*.parquet\nschema_version mandatory")]
+        MEM[("ho_du_lieu/kho_dac_trung/online/memory_store.py ✅\nLive in-memory")]
+        FB -->|"calls same functions"| FR
+        IE -->|"calls same functions"| FR
+        FB --> FEAT
+        IE --> MEM
+        FSPEC -.->|"validates"| FB
     end
 
-    subgraph RESEARCH["🔬 Research Layer ❌ (build Phase 1-3)"]
+    subgraph RESEARCH["🔬 Research Core ❌ (Phase 0–1)"]
         direction TB
-        LB["hoc_may/huan_luyen/labeler.py"]
-        PCV["hoc_may/huan_luyen/purged_cv.py\nPurgedKFold + AnchoredWFO"]
-        TR["hoc_may/huan_luyen/trainer.py\nLinear → LightGBM (OOS > 15%)"]
-        MODEL[("hoc_may/mo_hinh/\nalpha_model_*.pkl")]
-        OX["hoc_may/huan_luyen/onnx_exporter.py\n(sau shadow trade)"]
-        ONNX[("thuc_thi_lenh/dong_co_tin_hieu/models/\nalpha_v*.onnx")]
+        M_R1["hoc_may/huan_luyen/ — M-R1\nexperiment_record.py • reproducibility.py\nlabeler.py • trainer.py (Ridge default)"]
+        M_R2["nghien_cuu/danh_gia/leakage_audit.py — M-R2\nGate bắt buộc trước T1"]
+        M_R7["nghien_cuu/nha_may_alpha/cost_model.py — M-R7\nround_trip_cost_bps(symbol, side, size, regime)"]
+        M_R6["nghien_cuu/dong_co_phat_lai/vectorized_backtest.py — M-R6\nPolars-based, single file"]
+        M_R3["nghien_cuu/nha_may_alpha/t0_screen.py — M-R3 T0\n≤15 min | IC < 0.025 → KILL"]
+        M_R4["nghien_cuu/nha_may_alpha/t1_validate.py — M-R4 T1\nPurgedKFold + DSR + ICIR + Regime | ≤2 hr"]
+        M_R5["nghien_cuu/nha_may_alpha/t2_diligence.py — M-R5 T2\nStress + Walk-Forward | ≤1 day"]
+        REGISTRY["nghien_cuu/nha_may_alpha/alpha_registry.py — M-R9\nalpha_cemetery.py — Kill tracking"]
     end
 
-    subgraph BACKTEST["📊 Backtest Layer ❌ (build Phase 1-4)"]
+    subgraph DEPLOY["🚀 Live Core ✅/❌"]
         direction TB
-        VBT["nghien_cuu/kiem_thu_qua_khu/ma_tran_sie_toc/\nVectorized Backtest — Polars"]
-        CM["nghien_cuu/kiem_thu_qua_khu/ma_tran_sie_toc/cost_model.py\nphase1_cost + transient_impact\nc=0.15, dùng true_liquidity"]
-        FILL["moi_truong_chay/paper/microstructure_model.py ✅\nBasic fill simulation — cuối Phase 2\n(halflife < 50 bars = MANDATORY gate)"]
-        EBT["nghien_cuu/kiem_thu_qua_khu/mo_phong_su_kien/\nEvent-Driven — Phase 4"]
-        RPL["nghien_cuu/dong_co_phat_lai/replay_engine.py\nparquet → ZMQ → production pipeline"]
-        EVAL["nghien_cuu/danh_gia/evaluator.py\noverfit_tests.py • alpha_diagnostics.py\nregime_analyzer.py • experiment_tracker.py"]
-    end
-
-    subgraph DEPLOY["🚀 Production ✅"]
-        direction TB
-        SIG["thuc_thi_lenh/dong_co_tin_hieu/ml_signal_engine.py\nONNX inference"]
-        EMS["thuc_thi_lenh/dong_co_thuc_thi/ems.py"]
-        RG["quan_tri_rui_ro/kiem_tra_truoc_lenh/risk_gate.py\nPre-trade risk — hot path"]
-        WD["quan_tri_rui_ro/nguoi_gac_cong/watchdog/watchdog.py\n+ emergency_flattener.py"]
-        MON["giam_sat/ ✅ + auto_kill.py ❌\n+ reality_gap_monitor.py ❌"]
+        PAPER["moi_truong_chay/paper/ ✅ (~95%) — M-L1\nPaper trade + fill capture"]
+        SIG["thuc_thi_lenh/dong_co_tin_hieu/ml_signal_engine.py ✅\nONNX inference"]
+        EMS["thuc_thi_lenh/dong_co_thuc_thi/ems.py ✅"]
+        RG["quan_tri_rui_ro/kiem_tra_truoc_lenh/risk_gate.py ✅ (~70%) — M-L5\nRG-1 to RG-17 pre-trade checks\nINV-EXC.1: exchange_metadata.yaml reference"]
+        MON["giam_sat/ ❌\nexecution_parity.py • reality_gap_monitor.py • auto_kill.py"]
     end
 
     WS_LIVE --> OHLC --> RAW
     WS_LIVE --> OB --> RAW
-    VENDOR -->|"historical parquet"| DL
-    RAW -->|"WS archive — primary"| RECON
-    REST_FB -.->|"fallback only\nflag=REST_fallback"| RECON
-    DL --> CL
-    RECON --> CL
-    CL --> CLEAN
-    CLEAN --> LF
-    LF -->|"universe sau filter"| DREG
+    REST_FB -.->|"fallback only"| GAP
+    RAW --> GAP
+    MD0 -.->|"dataset_id gate"| RESEARCH
     CLEAN --> FB
-    FB -->|"gọi same functions"| FR
-    IE -->|"gọi same functions"| FR
-    FB --> FEAT
-    FEAT --> LB --> PCV --> TR --> MODEL --> OX --> ONNX
-    FEAT --> VBT
-    CM -->|"true_liquidity cost"| VBT
-    VBT -->|"halflife < 50 bars → MANDATORY"| FILL
-    FILL -->|"survived fill gate?"| EBT
-    EBT --> RPL --> DEPLOY
-    VBT --> EVAL
-    ONNX --> SIG --> EMS --> RG
-    IE --> MEM
-    MON -.->|"IC decay kill signal"| SIG
+    FEAT --> M_R1
+    M_R1 --> M_R3
+    M_R7 --> M_R3
+    M_R2 -->|"PASS gate"| M_R4
+    M_R3 -->|"T0 PASS"| M_R4
+    M_R4 -->|"T1 PASS"| M_R5
+    M_R6 --> M_R5
+    REGISTRY --> M_R4
+    M_R5 -->|"T2 PASS"| PAPER
+    PAPER --> SIG --> EMS --> RG
+    MON -.->|"IC decay kill"| SIG
 
     style SOURCE fill:#1a1a2e,stroke:#e94560,color:#fff
     style DEPLOY fill:#0f3460,stroke:#16213e,color:#fff
-    style BATCH_PIPELINE fill:#1a2e1a,stroke:#27ae60,color:#fff
+    style GAP fill:#1a2e1a,stroke:#27ae60,color:#fff
+    style RESEARCH fill:#1a1a3e,stroke:#3498db,color:#fff
+    style MD0 fill:#2e1a3e,stroke:#9b59b6,color:#fff
+    style DATA_CORE fill:#0a0a1a,stroke:#555,color:#fff
 ```
 
 ---
 
-## B. Research Loop hàng ngày — Jupyter Notebooks
+## B. Research Loop — T0 / T1 / T2
 
 ```mermaid
 flowchart LR
-    subgraph NB0["📓 00_plumbing_test.ipynb ❌"]
+    subgraph NB_STAGE0["📓 Stage -1 + 0 — 30 phút\nKhông code, không data"]
         direction TB
-        P1["alpha_001_ema_cross\n(dummy alpha)"]
-        P2["→ full pipeline → AlphaReport\nMục tiêu: < 5 phút"]
-        P3{"pit_audit pass?\nAlphaReport format OK?\nAlpha KILL như kỳ vọng?"}
-        P1 --> P2 --> P3
+        S0_1["Mechanism: giải thích 2 câu\nCemetery similarity search: < 0.85\nFeature count ≤ 5"]
+        S0_2["venue_type: agnostic / dependent\nHalflife sanity: < 2 bars → KILL\nListings cohort filter documented"]
+        S0_3["Pre-register ExperimentRecord\nhypothesis_text (immutable)\nn_trials/family tracking start"]
+        S0_1 --> S0_2 --> S0_3
     end
 
-    subgraph NB1["📓 01_data_exploration.ipynb ❌"]
+    subgraph NB_T0["📓 T0 Screen — ≤15 phút\nnghien_cuu/nha_may_alpha/t0_screen.py"]
         direction TB
-        N1A["downloader.py + dataset_registry\nVendor parquet + WS reconcile"]
-        N1B["cleaner.fill_gaps() → flag is_gap_filled\nWinsorize features only\n⚠️ KHÔNG xử lý raw returns"]
-        N1C["cleaner.pit_audit() — 3 tests:\n1. Embargo IC test\n2. Future probe\n3. Chronological index"]
-        N1D["validate_universe_coverage()\nget_active_universe(date, exchange)"]
-        N1A --> N1B --> N1C --> N1D
+        T0_1["Spearman IC — toàn sample, no CV\nBTC-neutralize returns trước"]
+        T0_2["Rough cost = turnover × round_trip_bps\n(từ cost_model.py — M-R7)"]
+        T0_3["Dynamic threshold (effective_n):\n  n<300: IC>0.030, CostAdj>0.020\n  300-600: IC>0.025, CostAdj>0.015\n  n>600: IC>0.020, CostAdj>0.012"]
+        T0_4{{"K1: |IC| < threshold → KILL\nK2: cost_adj_ic < threshold → KILL\nK3: cost > 40% gross IC → KILL"}}
+        T0_1 --> T0_2 --> T0_3 --> T0_4
     end
 
-    subgraph NB2["📓 02_feature_engineering.ipynb ❌"]
+    subgraph NB_LEAK["📓 Leakage Audit — chạy 1 lần\nnghien_cuu/danh_gia/leakage_audit.py — M-R2"]
         direction TB
-        N2A["feature_builder.build_batch_features()\n→ gọi feature_registry.py (live parity)"]
-        N2B["align_funding_to_bars() + validate_funding_alignment()\nclassify_funding_signal_type()"]
-        N2C["feature_diagnostics: IC • orthogonality • stability\nfeature_exposure(signal, factor_set)\n→ R² per factor (BTC/DeFi/Meme/Funding)"]
-        N2D["pit_audit() — chạy lại sau mỗi feature mới"]
-        N2A --> N2B --> N2C --> N2D
+        L1["Future probe: IC(signal[t], return[t-1]) ≈ 0?"]
+        L2["Normalization PiT: không dùng full-sample z-score"]
+        L3["Expanding window check — không expanding mean sau t"]
+        L4{{"PASS / FAIL — gates T1\nFAIL → block T1 hoàn toàn\n[Override: AUDIT-4/5/10 operational only\nmax 2/năm, human sign-off required\nNEVER override AUDIT-1/2]"}}
+        L1 --> L2 --> L3 --> L4
     end
 
-    subgraph NB3["📓 03_alpha_screening.ipynb ❌"]
+    subgraph NB_T1["📓 T1 Validate — ≤2 giờ\nnghien_cuu/nha_may_alpha/t1_validate.py — M-R4"]
         direction TB
-        N3A["Triage nhiều ideas song song\nSTAGE 0: 30 phút hypothesis\nSTAGE 1: 2 phút IC screen"]
-        N3B["IC < 0.010 → KILL ngay\nAlphaAutopsy → cemetery.bury()"]
-        N3C["IC ≥ 0.010 → Stage 2: IC full + decay curve\nIR_estimate = IC × √BR_effective"]
-        N3D["Stage 3: PurgedCV + PBO + DSR + BH\nStage 4: cost-adjusted IR + regime IC\nStage 5: marginal IR vs existing alphas"]
-        N3A --> N3B --> N3C --> N3D
+        T1_1["PurgedKFold (5-fold, 21-day embargo)\nmean_cv_ic > 0.020"]
+        T1_1b["ICIR = mean(CV_IC_folds) / std(CV_IC_folds)\nKill nếu ICIR < 1.0\nWarn nếu ICIR < 1.5"]
+        T1_2["DSR > 0.50 (n_trials_total từ ExperimentRecord)\nMỗi feature/horizon/filter tweak = +1 trial"]
+        T1_3["Regime split IC (3 regimes)\nKill nếu bất kỳ regime < -0.010"]
+        T1_4["T1.5: corr vs registry < 0.60\nT1.6: |residual_beta| < 0.15\nT1.7: Ridge coeff stability > 2.0\nT1.8: ic_short check — nếu ic_short < -0.01\n  → max_short_weight ≤ 50% trong paper\n  → KHÔNG promote lên SHADOW cho đến khi paper gate xác nhận"]
+        T1_5{{"ALL checks pass?"}}
+        T1_1 --> T1_1b --> T1_2 --> T1_3 --> T1_4 --> T1_5
     end
 
-    subgraph NB4["📓 04_model_training.ipynb ❌"]
+    subgraph NB_T2["📓 T2 Full Diligence — ≤1 ngày\nnghien_cuu/nha_may_alpha/t2_diligence.py — M-R5"]
         direction TB
-        N4A["Labels: forward_return, triple_barrier\nTrainer: Linear/Ridge/Lasso TRƯỚC\nLightGBM chỉ khi OOS gain > 15%"]
-        N4B["PurgedKFold (research) vs AnchoredWFO (deploy)\nStationary bootstrap — dynamic block size"]
-        N4C["DSR + PBO + White's Reality Check\neffective_sample_size_warning()"]
-        N4A --> N4B --> N4C
+        T2_1["T2.1: Vectorized backtest 2 năm\nSharpe > 0.8 (aim 1.2) | max_dd < 25%\nir_vs_benchmark ≥ 0.20\nexecution_lag_bars=1, execution_price=open_next\nrolling_vol_window=21 bars\nFunding settlement-aligned (không per-bar):\n  charge CHỈ khi position open TRƯỚC và TẠI settlement"]
+        T2_2["T2.2: Walk-forward 6 windows\nwf_ic_std < 0.50 × wf_ic_mean\n[WF dates PHẢI pre-defined trong research.yaml ✅\ncùng lúc với t1_fold_dates — BLOCKED nếu không có]"]
+        T2_3["T2.3: Stress test\nLuna + FTX (mandatory) + 20 random high-vol (seed cố định)\npass ≥ 14/20 random periods"]
+        T2_4["T2.7: Marginal Sharpe > 0.05\nT2.8: IC halflife[stressed] ≥ 3 bars\nT2.9: Dual fill — Scenario A ≥ 0.80 AND Scenario B ≥ 0.75\nCascade exit: cascade_impact < 0.30"]
+        T2_5{{"ALL checks pass?\nLive haircut expect: 30–60% từ backtest IC"}}
+        T2_1 --> T2_2 --> T2_3 --> T2_4 --> T2_5
     end
 
-    subgraph NB5["📓 05_backtest_validation.ipynb ❌"]
-        direction TB
-        N5A["Vectorized backtest — Polars\ncost_model dùng true_liquidity\n(không dùng ADV)"]
-        N5B["Nếu halflife < 50 bars:\nmicrostructure_model.py fill simulation\n→ MANDATORY trước promotion"]
-        N5C["regime_conditional_ic + transition_hazard\ndownside_beta + regime_conditional_covariance"]
-        N5D["experiment_tracker.log_run()\nalpha_cemetery nếu fail"]
-        N5E{{"Survived cost + regime + fill gate?\nPromotion to VALIDATION?"}}
-        N5A --> N5B --> N5C --> N5D --> N5E
-    end
+    KILL["💀 KILL\nalpha_cemetery.py\nAlphaAutopsy → reason logged"]
+    PAPER_GO["📝 → PAPER TRADE\nmoi_truong_chay/paper/ ✅"]
 
-    NB0 -->|"pipeline verified"| NB1
-    NB1 -->|"clean.parquet + universe PiT"| NB2
-    NB2 -->|"features.parquet"| NB3
-    NB3 -->|"alpha passed Stage 3-5"| NB4
-    NB4 -->|"model.pkl"| NB5
+    NB_STAGE0 -->|"Stage 0 PASS"| NB_T0
+    NB_T0 -->|"T0 PASS"| NB_LEAK
+    NB_T0 -->|"KILL"| KILL
+    NB_LEAK -->|"LEAK PASS"| NB_T1
+    NB_LEAK -->|"FAIL → block"| KILL
+    NB_T1 -->|"T1 PASS"| NB_T2
+    NB_T1 -->|"KILL"| KILL
+    NB_T2 -->|"T2 PASS"| PAPER_GO
+    NB_T2 -->|"KILL"| KILL
+
+    style KILL fill:#e74c3c,stroke:#c0392b,color:#fff
+    style PAPER_GO fill:#27ae60,color:#fff
 ```
+
+> **Throughput:**
+> - Stage -1+0: ~10–20 ideas/week (15–30 phút/idea)
+> - T0: ~5–10 PASS/week (automated, ≤15 phút)
+> - T1: ~1–3 PASS/week (≤2 giờ + leakage gate)
+> - T2: ~0.5–1 PASS/week (≤1 ngày)
+> - Target kill rate: T0 kills 85–95% của ideas qua Stage 0
 
 ---
 
@@ -171,64 +191,79 @@ flowchart LR
 
 ```mermaid
 flowchart TB
-    IDEA["💡 IDEA\nHypothesis + economic_mechanism\nregistered_at timestamp\nfeatures_locked + parameter_ranges"]
+    IDEA["💡 IDEA\nTừ notebooks / anomaly_miner\nHypothesis seed"]
 
-    STAGE0["STAGE 0 — 30 phút\nHypothesis documentation\nCemetery check\nHalflife ≥ 20 bars\nData availability"]
-    G0{{"economic_mechanism documented?\nNo duplicate in cemetery?\nHalflife ≥ 20 bars?"}}
+    STAGE_M1["STAGE -1 — 15 phút\nKhông code, không data"]
+    GM1{{"Cemetery similarity < 0.85?\nFeature count ≤ 5?\nHalflife ≥ 2 bars?\nEconomic mechanism 2 câu?"}}
 
-    STAGE1["STAGE 1 — 2 phút\nQuick IC screen\n2022-2023 subset"]
-    G1{{"IC > 0.010?"}}
+    STAGE0["STAGE 0 — 30 phút\nPre-registration"]
+    G0{{"hypothesis_text locked?\nvenue_type declared?\nListing cohort filter documented?\nExperimentRecord created?"}}
 
-    STAGE2["STAGE 2 — < 1 giờ\nIC full in-sample\nIC decay curve\nIR_estimate = IC × √BR_effective"]
-    G2{{"IR_estimate > 0.30?"}}
+    T0["T0 SCREEN — ≤15 phút\nt0_screen.py — M-R3\nIC + cost gate"]
+    GT0{{"IC > threshold (dynamic, n-based)?\ncost_adj_ic > threshold?\ncost < 40% gross IC?"}}
 
-    STAGE3["STAGE 3 — < 6 giờ\nPurgedKFold CV\nDSR + PBO + BH correction\nfeature_exposure() R² per factor"]
-    G3{{"PBO < 0.50?\nDeflated Sharpe > 0?\nBH p-value < 0.05?\nfeature residual R² > 0.30?"}}
+    LEAK["LEAKAGE AUDIT — M-R2\nleakage_audit.py\nGate bắt buộc trước T1"]
+    GL{{"Future probe ≈ 0?\nNormalization PiT?\nNo look-ahead?"}}
 
-    STAGE4["STAGE 4 — < 1 ngày\nCost-adjusted IR\n(true_liquidity, c=0.15, borrowing cost)\nRegime IC 3 dimensions\nFill simulation nếu halflife < 50 bars"]
-    G4{{"Cost-adjusted IR > 0.25?\nRegime IC > 0 trong ≥ 2/3?\nFill gate pass nếu halflife < 50?"}}
+    T1["T1 VALIDATE — ≤2 giờ\nt1_validate.py — M-R4"]
+    GT1{{"mean_cv_ic > 0.020?\nICIR > 1.0 (kill nếu < 1.0)?\nDSR > 0.50 (n_trials_total)?\nNo regime IC < -0.010?\ncorr_registry < 0.60?\n|residual_beta| < 0.15?\nRidge stability > 2.0?\nT1.8: ic_short check?"}}
 
-    STAGE5["STAGE 5 — < 1 ngày\nCorrelation vs existing alphas\nMarginal IR"]
-    G5{{"Correlation < 0.60?\nMarginal IR > 0.05?"}}
+    T2["T2 FULL DILIGENCE — ≤1 ngày\nt2_diligence.py — M-R5"]
+    GT2{{"Sharpe > 0.8? max_dd < 25%?\nir_vs_benchmark ≥ 0.20?\nwf_ic stable? WF dates pre-defined?\nStress Luna+FTX + 20 random periods?\nDual fill A≥0.80 AND B≥0.75?\ncascade_impact < 0.30?\nFunding settlement-aligned?"}}
 
-    PAPER["📝 PAPER TRADE\n≥ 30 ngày\n+ Tiny Live ≥ 30 ngày (1% size)\nslippage vs estimate"]
-    GP{{"Live slippage < 2× estimate?\nLive IR ≥ 0.40?"}}
+    PAPER["📝 PAPER TRADE\nmoi_truong_chay/paper/ ✅\n≥ 60 trading days\nfill_capture.py → calibrate M-R7\n[ic_short < -0.01 → max_short_weight ≤ 50%]"]
+    GP{{"Live IC ≥ 70% backtest IC?\npaper_ic_absolute ≥ 0.025?\nRolling 10d IC ≥ 0.015 mọi window?\nSlippage ≤ 2× model estimate?\nExecution parity OK?\n[ic_short ổn định trong paper gate?]"}}
 
-    SHADOW["👁️ SHADOW LIVE\n≥ 90 ngày\nReal signals, minimal capital"]
-    GS{{"Shadow Sharpe ≥ 0.80?\nMaxDD < 15%?\nMarginal IR to portfolio > 0.05?"}}
+    LIVE["🚀 LIVE TRADE\nReal capital (small)\nAll risk gates active\nScheduled T2 re-val: 6 tháng"]
+    GL2{{"Rolling 30d IC ≥ 25% inception\nsustained ≥ 14 ngày?\nDD < 15%?"}}
+    GCRISIS{{"HARD_DECAY +\nM-R11 crisis regime?\n(btc_alt_corr > 0.8\nOR vacuum)"}}
 
-    PROD["🚀 PRODUCTION\nReal capital\nauto_kill.py monitoring\nreality_gap_monitor.py"]
+    SCALE["📈 SCALE UP\n+25% capital/month\nM-L4 ERC khi ≥2 alphas\nFamily exposure ≤ 60%"]
 
-    KILL["💀 KILL\nAlphaAutopsy → cemetery.bury()\nfailure_pattern_report()"]
+    HIBERNATE["😴 HIBERNATE\nScale to 0%\nGiữ trong registry\nReactivate check sau 21 ngày\nMax 90 ngày"]
 
-    IDEA --> STAGE0 --> G0
-    G0 -->|"YES"| STAGE1
-    G0 -->|"NO"| KILL
-    STAGE1 --> G1
-    G1 -->|"YES"| STAGE2
-    G1 -->|"NO"| KILL
-    STAGE2 --> G2
-    G2 -->|"YES"| STAGE3
-    G2 -->|"NO"| KILL
-    STAGE3 --> G3
-    G3 -->|"YES"| STAGE4
-    G3 -->|"NO"| KILL
-    STAGE4 --> G4
-    G4 -->|"YES"| STAGE5
-    G4 -->|"NO"| KILL
-    STAGE5 --> G5
-    G5 -->|"YES"| PAPER
-    G5 -->|"NO"| KILL
+    RETIRE["📉 RETIRE\nCapital taper 25%/week\nPost-mortem → cemetery\nalpha_retirement.py"]
+
+    KILL["💀 KILL\nalpha_cemetery.py\nAlphaAutopsy(kill_reason)\nSimilarity index updated"]
+
+    IDEA --> STAGE_M1 --> GM1
+    GM1 -->|"PASS"| STAGE0
+    GM1 -->|"FAIL"| KILL
+    STAGE0 --> G0
+    G0 -->|"PASS"| T0
+    G0 -->|"FAIL"| KILL
+    T0 --> GT0
+    GT0 -->|"PASS"| LEAK
+    GT0 -->|"KILL"| KILL
+    LEAK --> GL
+    GL -->|"PASS"| T1
+    GL -->|"FAIL — block"| KILL
+    T1 --> GT1
+    GT1 -->|"ALL PASS"| T2
+    GT1 -->|"ANY FAIL"| KILL
+    T2 --> GT2
+    GT2 -->|"ALL PASS"| PAPER
+    GT2 -->|"ANY FAIL"| KILL
     PAPER --> GP
-    GP -->|"YES"| SHADOW
-    GP -->|"NO"| KILL
-    SHADOW --> GS
-    GS -->|"YES"| PROD
-    GS -->|"NO"| KILL
+    GP -->|"PASS"| LIVE
+    GP -->|"FAIL"| KILL
+    LIVE --> GL2
+    GL2 -->|"HEALTHY"| SCALE
+    GL2 -->|"HARD_DECAY"| GCRISIS
+    GCRISIS -->|"YES — crisis"| HIBERNATE
+    GCRISIS -->|"NO — normal market"| RETIRE
+    HIBERNATE -->|"IC recover 30 ngày"| LIVE
+    HIBERNATE -->|"90 ngày không recover"| RETIRE
+    RETIRE -->|"post-mortem filed"| KILL
+    SCALE -->|"continuous monitoring"| LIVE
 
     style KILL fill:#e74c3c,stroke:#c0392b,color:#fff
-    style PROD fill:#27ae60,stroke:#229954,color:#fff
+    style RETIRE fill:#e67e22,stroke:#d35400,color:#fff
+    style HIBERNATE fill:#5d4037,stroke:#4e342e,color:#fff
+    style LIVE fill:#27ae60,stroke:#229954,color:#fff
+    style SCALE fill:#2ecc71,stroke:#27ae60,color:#000
     style IDEA fill:#3498db,stroke:#2980b9,color:#fff
+    style STAGE_M1 fill:#8e44ad,stroke:#7d3c98,color:#fff
 ```
 
 ---
@@ -237,72 +272,70 @@ flowchart TB
 
 ```mermaid
 flowchart TB
-    subgraph SHARED["🔗 Shared Code — CÙNG file, CÙNG function ✅"]
-        FR["ong_dan_dac_trung/online/feature_registry.py\n_update_ema() • _update_welford_var()\n_update_ofi() • _update_micro_price()"]
-        PS["thoat_vi_the/position_sizer.py\nanti-flip, lot rounding"]
-        ES["thoat_vi_the/strategies/\nfixed_percent, trailing, time_based, atr_based"]
+    subgraph SHARED["🔗 Shared Code — CÙNG file, CÙNG function"]
+        FR["ong_dan_dac_trung/online/feature_registry.py ✅\nBit-exact: live == batch, tolerance 1e-6\nKS test weekly — giam_sat/execution_parity.py"]
+        FSPEC2["nghien_cuu/khung_alpha/feature_spec.py ❌ (Phase 1)\nFeatureSpec registry — pit_safe, live_ready flags\nMọi feature cần entry trước T0/T1/T2"]
+        PS["thuc_thi_lenh/quan_ly_danh_muc/thoat_vi_the/position_sizer.py ✅"]
+        ES["thuc_thi_lenh/quan_ly_danh_muc/thoat_vi_the/strategies/ ✅\nfixed_percent, trailing, time_based, atr_based"]
+        CM["nghien_cuu/nha_may_alpha/cost_model.py ❌\nDùng cùng model cho backtest + live check"]
+        EXCMETA2["cau_hinh/exchange_metadata.yaml ✅\nSINGLE SOURCE OF TRUTH — exchange constants\nINV-EXC.1: không hardcode trong adapter"]
     end
 
     subgraph LIVE["🟢 LIVE / PAPER ✅"]
         direction TB
-        WS["thu_thap/websocket/\nbinance_ws / bybit_ws / okx_ws"]
-        STREAM["xu_ly_dong/ohlc_engine.py\norderbook_engine.py\n→ raw stream → ho_du_lieu/tho/"]
-        IE["ong_dan_dac_trung/online/incremental_engine.py\n(zero-alloc, <10µs)"]
-        MEM["ho_du_lieu/kho_dac_trung/online/memory_store.py"]
-        SIG["dong_co_tin_hieu/ml_signal_engine.py\nONNX inference"]
-        EMS["dong_co_thuc_thi/ems.py"]
-        RG["quan_tri_rui_ro/kiem_tra_truoc_lenh/risk_gate.py"]
-        EC["quan_ly_danh_muc/thoat_vi_the/exit_coordinator.py"]
-        WAL["bo_nho_trang_thai/nhat_ky_wal/durable_wal.py"]
+        WS["thu_thap/websocket/ ✅\nbinance_ws / bybit_ws / okx_ws"]
+        STREAM["xu_ly_dong/ohlc_engine.py ✅\norderbook_engine.py ✅"]
+        IE["ong_dan_dac_trung/online/incremental_engine.py ✅"]
+        MEM["ho_du_lieu/kho_dac_trung/online/memory_store.py ✅"]
+        SIG["thuc_thi_lenh/dong_co_tin_hieu/ml_signal_engine.py ✅\nONNX inference (Ridge model exported)"]
+        EMS["thuc_thi_lenh/dong_co_thuc_thi/ems.py ✅"]
+        RG_LIVE["quan_tri_rui_ro/kiem_tra_truoc_lenh/risk_gate.py ✅\nRG-1→RG-17 pre-trade checks\nreferences exchange_metadata.yaml"]
 
         WS --> STREAM --> IE
         IE -->|"calls"| FR
-        IE --> MEM --> SIG --> EMS --> RG
-        EMS --> EC
-        EC -->|"calls"| ES
-        EMS -->|"calls"| PS
-        EMS --> WAL
+        IE --> MEM --> SIG --> EMS --> RG_LIVE
     end
 
-    subgraph RESEARCH["🔵 RESEARCH (Notebooks + Scripts) ❌"]
+    subgraph RESEARCH["🔵 RESEARCH (Scripts + Notebooks) ❌"]
         direction TB
-        PQ["Vendor parquet + WS stream archive\nho_du_lieu/tho/"]
-        CL2["xu_ly_lo/cleaner.py\nfill_gaps (flag) + winsorize features only"]
-        FB2["xu_ly_lo/feature_builder.py\nbuild_batch_features()"]
-        FEAT2["ho_du_lieu/kho_dac_trung/offline/\nfeatures_*.parquet"]
-        BT2["nghien_cuu/kiem_thu_qua_khu/\nVectorized Backtest (Polars)"]
+        PQ["ho_du_lieu/tho/ + ho_du_lieu/da_xu_ly/\nRaw + gap-flagged Parquet\nschema_version mandatory"]
+        GAP_MOD["dong_co_du_lieu/xu_ly_lo/\ngap_detector • rest_filler • quality_tagger\npit_universe • symbol_remapper"]
+        FB2["xu_ly_lo/feature_builder.py ❌\nbuild_batch_features()\nVerify FeatureSpec entry trước khi compute"]
+        FEAT2["ho_du_lieu/kho_dac_trung/offline/\nfeatures_*.parquet [DEFER Phase 1]"]
+        BT2["nghien_cuu/dong_co_phat_lai/vectorized_backtest.py ❌\nPolars-based — M-R6\nFunding: settlement-aligned only"]
 
-        PQ --> CL2 --> FB2
+        PQ --> GAP_MOD --> FB2
         FB2 -->|"calls SAME functions"| FR
+        FB2 -.->|"validates against"| FSPEC2
         FB2 --> FEAT2 --> BT2
         BT2 -->|"calls SAME exit logic"| ES
-        BT2 -->|"calls SAME sizing logic"| PS
+        BT2 -->|"calls SAME sizing"| PS
     end
 
-    subgraph PAPER_ENV["📝 PAPER / TINY LIVE ✅"]
+    subgraph PARITY["🟣 Execution Parity Monitor ❌\ngiam_sat/execution_parity.py — M-L2"]
         direction TB
-        PM["moi_truong_chay/paper/paper_runner.py"]
-        PEA["moi_truong_chay/paper/paper_ems_adapter.py"]
-        MM["moi_truong_chay/paper/microstructure_model.py\n⚠️ Dùng lại ở cuối Phase 2 cho fill gate"]
-        SS["moi_truong_chay/paper/shock_simulator.py"]
-        PM --> PEA --> MM
-        SS --> MM
+        EP1["signal_live_vs_research_diff()\nChạy hourly trong paper phase\nmean_abs_diff < 0.02σ → OK"]
+        EP2["feature_parity_check()\nKS test weekly trên feature distributions"]
+        EP3{{"status = OK?\nmean_abs_diff < 0.02σ?\ntiming_lag < 2 bars?"}}
+        EP1 --> EP2 --> EP3
     end
 
-    subgraph REPLAY["🟡 REPLAY (Integration Test) ❌"]
+    subgraph PAPER_ENV["📝 PAPER TRADE ✅ (~95%) — M-L1"]
         direction TB
-        RPE["nghien_cuu/dong_co_phat_lai/replay_engine.py\nparquet → ZMQ format"]
-        ZMQ["ha_tang/bus_su_kien/zmq_bus.py ✅\nCÙNG ports như live"]
-        FULL["Full production pipeline\nexact same code as live"]
-
-        RPE -->|"emit events"| ZMQ --> FULL
+        PM["moi_truong_chay/paper/paper_runner.py ✅"]
+        PEA["moi_truong_chay/paper/paper_ems_adapter.py ✅"]
+        FC["moi_truong_chay/paper/fill_capture.py ❌\nCapture fills → calibrate M-R7 adverse selection"]
+        PM --> PEA --> FC
     end
+
+    EP3 -->|"FAIL: PAUSE + debug"| FB2
+    EP3 -->|"OK: continue"| PAPER_ENV
 
     style SHARED fill:#f39c12,stroke:#e67e22,color:#000
     style LIVE fill:#1a5276,stroke:#154360,color:#fff
     style RESEARCH fill:#1a3c5e,stroke:#154360,color:#fff
     style PAPER_ENV fill:#2e7d32,stroke:#1b5e20,color:#fff
-    style REPLAY fill:#7d6608,stroke:#6c5b08,color:#fff
+    style PARITY fill:#4a235a,stroke:#7d3c98,color:#fff
 ```
 
 ---
@@ -311,63 +344,67 @@ flowchart TB
 
 ```mermaid
 flowchart LR
-    ALL["Alpha ideas\nqua Stage 0-2 triage"]
+    IDEAS["Alpha ideas\nqua Stage -1 + 0\nT0 PASS"]
 
-    subgraph TIER1["⚡ Vectorized Backtest\nnghien_cuu/kiem_thu_qua_khu/ma_tran_sie_toc/\n(vài giây / 4 năm data)"]
+    subgraph T0_GATE["⚡ T0 Screen — ≤15 phút\nnghien_cuu/nha_may_alpha/t0_screen.py"]
         direction TB
-        V1["Polars batch signal compute\n(feature_registry.py — same as live)"]
-        V2["cost_model.py: phase1_cost\n+ transient_impact\nc=0.15, true_liquidity không phải ADV"]
-        V3["Exit logic từ thoat_vi_the/strategies/ ✅"]
-        V4["evaluator.py: IC • IR • DSR • PBO\nalpha_diagnostics: decay • capacity\nregime_conditional_ic • effective_breadth"]
-        V1 --> V2 --> V3 --> V4
+        T0G1["Spearman IC (toàn sample)\nBTC-neutralized returns"]
+        T0G2["Dynamic threshold (effective_n)\n  n<300: IC>0.030\n  300-600: IC>0.025\n  n>600: IC>0.020"]
+        T0G3{{"IC pass?\ncost_adj_ic pass?\ncost < 40% gross IC?"}}
+        T0G1 --> T0G2 --> T0G3
     end
 
-    GATE1{{"IC > 0.015?\nPBO < 0.50?\nDSR > 0?\nBH corrected p < 0.05?"}}
-
-    subgraph FILL_GATE["⚠️ Fill Gate — MANDATORY\ncuối Phase 2 cho halflife < 50 bars"]
+    subgraph LEAK_GATE["🔍 Leakage Audit — Gate bắt buộc\nnghien_cuu/danh_gia/leakage_audit.py"]
         direction TB
-        FG1["moi_truong_chay/paper/microstructure_model.py ✅\nL2 snapshot fill simulation\nKhông dùng công thức mượt"]
-        FG2{{"Slippage_actual ≤ 2× phase1_cost estimate?\nIR sau fill cost > 0?"}}
-        FG1 --> FG2
+        LG1["future_probe: IC(signal[t], return[t-1]) ≈ 0"]
+        LG2["normalization PiT: expanding window only"]
+        LG3{{"PASS?\n(FAIL = hard block T1)\nOverride: AUDIT-4/5/10 operational, max 2/năm\nNEVER override AUDIT-1/2"}}
+        LG1 --> LG2 --> LG3
     end
 
-    subgraph TIER2["🎯 Event-Driven Backtest — Phase 4\nnghien_cuu/kiem_thu_qua_khu/mo_phong_su_kien/"]
+    subgraph T1_GATE["🎯 T1 Validate — ≤2 giờ\nnghien_cuu/nha_may_alpha/t1_validate.py"]
         direction TB
-        E1["event_backtest.py: tick-by-tick"]
-        E2["fill_model.py: queue priority\npartial fills • latency injection"]
-        E3["phase4_book_depletion_cost()"]
-        E4["portfolio_optimizer.py + margin_ratio constraint\nround_to_lot() sau CVXPY"]
-        E1 --> E2 --> E3 --> E4
+        T1G1["PurgedKFold 5-fold, embargo 21 days\nmean_cv_ic > 0.020"]
+        T1G1b["ICIR = mean(CV_IC) / std(CV_IC)\nKill nếu ICIR < 1.0\nWarn nếu ICIR < 1.5"]
+        T1G2["DSR > 0.50 (n_trials_total — cross-family)\n+1 per feature/horizon/filter tweak"]
+        T1G3["Regime split IC — commit thresholds trước T0\nAll 3 regimes IC > -0.010"]
+        T1G4["T1.5: corr_registry < 0.60\nT1.6: |residual_beta| < 0.15\nT1.7: Ridge stability > 2.0\nT1.8: ic_short < -0.01 → max_short_weight ≤ 50%\n  (không kill, nhưng constrain paper exposure)"]
+        T1G5{{"ALL pass?"}}
+        T1G1 --> T1G1b --> T1G2 --> T1G3 --> T1G4 --> T1G5
     end
 
-    GATE2{{"Sharpe_event > 0.7 × Sharpe_vectorized?\nMargin constraint satisfied?"}}
-
-    subgraph TIER3["🔄 Replay — Phase 4\nnghien_cuu/dong_co_phat_lai/"]
+    subgraph T2_GATE["📊 T2 Full Diligence — ≤1 ngày\nnghien_cuu/nha_may_alpha/t2_diligence.py"]
         direction TB
-        R1["replay_engine.py: parquet → ZMQ"]
-        R2["Full production pipeline ✅"]
-        R3["reality_gap_monitor.py tracking"]
-        R1 --> R2 --> R3
+        T2G1["Vectorized backtest 2 năm (Polars)\nSharpe > 0.8 | aim 1.2 | max_dd < 25%\nir_vs_benchmark ≥ 0.20\nexecution_lag_bars=1 (open_next)\nrolling_vol_window=21\nFunding settlement-aligned (không per-bar):\n  charge chỉ tại bar settlement khi position open"]
+        T2G2["Walk-forward 6 windows\nwf_ic_std < 0.50 × wf_ic_mean\n[BLOCKED nếu wf_test_dates không có\ntrong research.yaml ✅ trước T1]"]
+        T2G3["Stress: Luna 2022-05 + FTX 2022-11\n+ 20 random high-vol (seed cố định) ≥ 14/20 pass\nNot negative BOTH mandatory periods"]
+        T2G4["T2.7: marginal_sharpe > 0.05\nT2.8: IC halflife[stressed] ≥ 3 bars\nT2.9: Dual fill A≥0.80 AND B≥0.75\nCascade exit: cascade_impact < 0.30"]
+        T2G5{{"ALL pass?\nExpect 30–60% IC haircut live"}}
+        T2G1 --> T2G2 --> T2G3 --> T2G4 --> T2G5
     end
 
-    ALL -->|"triage pass"| TIER1
-    TIER1 --> GATE1
-    GATE1 -->|"halflife < 50 bars\nhoặc cross-exchange"| FILL_GATE
-    GATE1 -->|"halflife ≥ 50 bars\n→ VALIDATION trực tiếp"| VALIDATION["VALIDATION lifecycle"]
-    FG2 -->|"pass"| VALIDATION
-    FG2 -->|"fail"| DEAD1["💀 KILL\n(execution killed edge)"]
-    GATE1 -->|"fail"| DEAD0["💀 KILL"]
-    VALIDATION -->|"Phase 4"| TIER2
-    TIER2 --> GATE2
-    GATE2 -->|"pass"| TIER3
-    GATE2 -->|"fail"| DEAD2["💀 KILL"]
-    TIER3 -->|"Paper 30 ngày\n+ Tiny Live 30 ngày"| PAPER["📝 Paper/Tiny Live"]
+    DEAD0["💀 KILL — IC/cost gate"]
+    DEAD1["💀 KILL — leakage"]
+    DEAD2["💀 KILL — T1 fail"]
+    DEAD3["💀 KILL — T2 fail"]
+    PAPER_GO["📝 Paper Trade ≥ 60 ngày\nfill_capture → calibrate adverse selection"]
+
+    IDEAS --> T0_GATE
+    T0G3 -->|"FAIL"| DEAD0
+    T0G3 -->|"PASS"| LEAK_GATE
+    LG3 -->|"FAIL"| DEAD1
+    LG3 -->|"PASS"| T1_GATE
+    T1G5 -->|"FAIL"| DEAD2
+    T1G5 -->|"PASS"| T2_GATE
+    T2G5 -->|"FAIL"| DEAD3
+    T2G5 -->|"PASS"| PAPER_GO
 
     style DEAD0 fill:#e74c3c,color:#fff
     style DEAD1 fill:#e74c3c,color:#fff
     style DEAD2 fill:#e74c3c,color:#fff
-    style PAPER fill:#27ae60,color:#fff
-    style FILL_GATE fill:#e67e22,stroke:#d35400,color:#fff
+    style DEAD3 fill:#e74c3c,color:#fff
+    style PAPER_GO fill:#27ae60,color:#fff
+    style LEAK_GATE fill:#e67e22,stroke:#d35400,color:#fff
 ```
 
 ---
@@ -376,44 +413,61 @@ flowchart LR
 
 ```mermaid
 flowchart TB
-    subgraph HYPOTHESIS["1️⃣ Hypothesis"]
-        H1["Quan sát + economic mechanism\nVí dụ: funding spike → forced unwind\n→ predictable reversion trong 10-40 bars"]
+    subgraph DISCOVERY_SRC["🔍 Nguồn Hypothesis"]
+        direction LR
+        PUSH["PUSH: nghien_cuu/kham_pha_dac_trung/anomaly_miner.py ❌ [DEFER]\nObservation_log entries\nMarket replay notebooks"]
+        MANUAL["Manual: notebooks Jupyter\nF001–F004, M001–M003, OB001–OB003"]
+    end
+
+    subgraph HYPOTHESIS["1️⃣ Hypothesis — Stage -1 (15 phút)"]
+        H1["1 câu mechanism rõ ràng\nFeature count ≤ 5\nCemetery similarity < 0.85\nalpha_cemetery.py lookup"]
     end
 
     subgraph BUILD["2️⃣ Build"]
         direction TB
-        B1["Viết trong notebook cell\ndf = df.with_columns(...)"]
-        B2["Phân loại:\nTier 1 — cần live parity → feature_registry.py\nTier 2 — research only → feature_builder.py"]
-        B3["Funding signal? → classify_funding_signal_type()\n'realized' hoặc 'predictive_basis' — document rõ"]
+        B1["Viết trong Jupyter notebook\n(nghien_cuu/so_tay_jupyter/)"]
+        B2["Phân loại:\nTier 1: cần live parity → feature_registry.py\nTier 2: research only → feature_builder.py"]
+        B3["Funding signal?\n→ decompose: price_return vs funding_income\nsurprise_funding từ Premium Index MA"]
+        B4["Normalization: expanding window ONLY\nKhông full-sample z-score"]
     end
 
     subgraph TEST["3️⃣ Quality checks"]
         direction TB
-        T1["pit_audit() — 3 tests\n(embargo • future probe • chronological)"]
-        T2["feature_exposure(signal, factor_set)\n→ R² per factor\nRed flag: R²(BTC) > 0.60\nMinimum: residual R² > 0.30"]
-        T3["IC • orthogonality • stability check"]
-        T4["ic_decay_curve() — halflife bars"]
+        T1["leakage_audit.py — M-R2\nFuture probe + normalization PiT"]
+        T2["factor_neutralizer.py — M-R8\nBTC/ETH neutralization\nKill signal nếu R²(BTC) > 0.60"]
+        T3["IC stability check — stable across time windows?"]
+        T4["effective_n check\n< 300 → use strict thresholds"]
         T1 --> T2 --> T3 --> T4
     end
 
-    subgraph DECIDE["4️⃣ Decision"]
-        D1{{"pit_audit pass?\nfeature residual R² > 0.30?\nIC > 0.010?\nOrthogonal vs existing features?"}}
+    subgraph FSPEC_REG["3b️⃣ Register FeatureSpec (TRƯỚC khi Register)"]
+        direction TB
+        FS1["nghien_cuu/khung_alpha/feature_spec.py ❌\nTạo FeatureSpec entry:\n  name, inputs, frequency\n  min_history_bars, pit_safe\n  live_ready, normalization"]
+        FS2["Verify pit_safe=True (expanding window confirmed)\nVerify live_ready nếu Tier 1 feature"]
+        FS1 --> FS2
+    end
+
+    subgraph DECIDE["4️⃣ Decision (T0 Screen)"]
+        D1{{"leakage_audit PASS?\n|IC| > threshold (effective_n based)?\ncost_adj_ic > threshold?\nNot BTC-beta dominant?\nFeatureSpec registered?"}}
     end
 
     subgraph REGISTER["5️⃣ Register"]
         direction TB
-        R1["Tier 2: thêm vào feature_builder.py\nDùng cho research, không có trên live"]
-        R2["Tier 1: đăng ký vào feature_registry.py ✅\n→ cần update incremental_engine.py ✅\n→ verify: batch == live diff < 1e-6"]
+        R1["Tier 2: feature_builder.py\nResearch only"]
+        R2["Tier 1: feature_registry.py ✅\n+ incremental_engine.py update\nVerify: batch == live diff < 1e-6\nexecution_parity.py monitor drift"]
     end
 
-    REJECT["❌ Reject — log lý do\nAlphaAutopsy.lessons nếu cả alpha bị kill"]
+    REJECT["❌ Reject — log lý do\nalpha_cemetery.py nếu hypothesis bị kill"]
 
-    HYPOTHESIS --> BUILD --> TEST --> DECIDE
+    DISCOVERY_SRC --> HYPOTHESIS
+    HYPOTHESIS --> BUILD --> TEST --> FSPEC_REG --> DECIDE
     DECIDE -->|"PASS"| REGISTER
     DECIDE -->|"FAIL"| REJECT
 
     style REJECT fill:#e74c3c,color:#fff
     style REGISTER fill:#27ae60,color:#fff
+    style DISCOVERY_SRC fill:#2e1a2e,stroke:#9b59b6,color:#fff
+    style FSPEC_REG fill:#1a2e3e,stroke:#3498db,color:#fff
 ```
 
 ---
@@ -422,46 +476,51 @@ flowchart TB
 
 ```mermaid
 flowchart TB
-    subgraph INITIAL["🔰 Initial Training"]
-        I1["AnchoredWFO\nanchor = 2020-01-01\nretrain_freq = monthly"]
-        I2["Model stack: Linear → Ridge → Lasso\n→ LightGBM chỉ khi OOS gain > 15%"]
-        I3["Validate: PurgedKFold + DSR + PBO\neffective_sample_size_warning()"]
+    subgraph INITIAL["🔰 Initial Training — M-R1"]
+        I1["hoc_may/huan_luyen/trainer.py\nDefault: Ridge Regression\nLightGBM chỉ khi OOS IC gain > 15% vs Ridge"]
+        I2["reproducibility.py:\n  dataset SHA-256 locked\n  random_seed pinned\n  ExperimentRecord pre-registered"]
+        I3["PurgedKFold 5-fold, embargo 21 days\nDSR > 0.50, effective_n warning < 500\nAdaptive thresholds: n<300 → strict"]
         I1 --> I2 --> I3
     end
 
-    subgraph MONITOR["📡 Live Monitoring"]
+    subgraph MONITOR["📡 Live Monitoring — M-L2, M-L3"]
         direction TB
-        M1["Deploy model"]
-        M2["reality_gap_monitor.py ❌\ntrack: IC live • turnover • fill_rate • slippage\nZ-score mỗi dimension vs backtest"]
-        M3["auto_kill.py ❌\nPrimary: IC decay < 30% backtest IC × 20 ngày\nSecondary: Sharpe z < -2.58"]
-        M4{{"Degradation?"}}
-        M1 --> M2 --> M3 --> M4
+        M1["giam_sat/execution_parity.py ❌\nHourly parity check\nFeature KS test weekly"]
+        M2["giam_sat/reality_gap_monitor.py ❌\nDimensions: IC_live • fill_rate • slippage\nZ-score vs backtest — flag |z| > 2.0"]
+        M3["giam_sat/auto_kill.py ❌ — M-L3\nRolling 30d IC < 25% inception for 14 days → kill\nHARD_DECAY + crisis → HIBERNATE (không kill)\nScheduled T2 re-val: 6 tháng OR ood > 2.5×10d"]
+        M4["nghien_cuu/nha_may_alpha/alpha_retirement.py ❌\nReview mỗi 90 ngày\nTriggers: soft_decay, crowding, exec_saturation\n[Scheduled T2 re-val: mỗi 6 tháng\nOR ood_score > 2.5 × 10 ngày\nFAIL → SOFT_DECAY + investigate]"]
+        M5{{"Kill / Retire / Retrain / Hibernate?"}}
+        M1 --> M5
+        M2 --> M5
+        M3 --> M5
+        M4 --> M5
     end
 
     subgraph RETRAIN["🔄 Walk-Forward Retrain"]
         direction TB
-        W1["Slide window\nAnchoredWFO.retrain()"]
-        W2["Train v2 — same hyperparams\n(parameter freeze rule)"]
-        W3["Validate: Purged CV + DSR + PBO\nSo sánh IC_v2 vs IC_v1"]
-        W4{{"v2 > v1 + DSR pass?"}}
+        W1["Slide window — AnchoredWFO\nretrain_freq = monthly per alpha_family"]
+        W2["Train v2 — Ridge (same hyperparams)\nParameter freeze: không tune sau nhìn v2 result"]
+        W3["Validate: PurgedKFold + DSR\nSo sánh IC_v2 vs IC_v1 trên holdout"]
+        W4{{"v2 IC > v1 + DSR > 0.50?"}}
         W1 --> W2 --> W3 --> W4
     end
 
     subgraph SWAP["🔀 Model Swap"]
         direction TB
-        S1["Export model (ONNX sau shadow)"]
-        S2["Shadow 3 ngày — v1 trade, v2 quan sát"]
-        S3{{"v2 reality_gap OK?"}}
-        S4["Hot-swap: v1 → v2"]
+        S1["hoc_may/huan_luyen/onnx_exporter.py ❌ (Phase 4)\nExport v2 → ONNX"]
+        S2["Shadow ≥ 21 ngày: v1 trade, v2 observe\n[min 21d — ~120 bars đủ statistical power]"]
+        S3{{"v2 execution_parity OK?\nv2 reality_gap OK?"}}
+        S4["Hot-swap: v1 → v2\nmodel_registry.py update"]
         S1 --> S2 --> S3 --> S4
     end
 
-    KEEP["Giữ v1\nThử lại sau"]
+    RETIRE_PATH["📉 RETIRE\nCapital taper 25%/week → cemetery"]
+    KEEP["Giữ v1 — thử lại next cycle"]
 
     I3 --> MONITOR
-    M4 -->|"NO — healthy"| M2
-    M4 -->|"YES — IC decay"| RETRAIN
-    M4 -->|"YES — slippage drift"| RETRAIN
+    M5 -->|"IC decay → RETRAIN"| RETRAIN
+    M5 -->|"soft_decay / crowding → RETIRE"| RETIRE_PATH
+    M5 -->|"healthy"| M2
     W4 -->|"YES"| SWAP
     W4 -->|"NO"| KEEP
     S3 -->|"YES"| S4
@@ -471,6 +530,7 @@ flowchart TB
 
     style KEEP fill:#f39c12,color:#000
     style SWAP fill:#27ae60,color:#fff
+    style RETIRE_PATH fill:#e67e22,color:#fff
 ```
 
 ---
@@ -479,47 +539,73 @@ flowchart TB
 
 ```mermaid
 flowchart TB
-    subgraph ALPHAS["🔬 Alphas — lifecycle = VALIDATION"]
-        A1["Funding/Carry family\nIC ≈ 0.015-0.030"]
-        A2["Cross-sectional Momentum\nIC ≈ 0.012-0.025"]
-        A3["Volatility Regime\nIC ≈ 0.012-0.022"]
+    subgraph ALPHAS["🔬 Active Alphas — lifecycle = LIVE"]
+        A1["Family 1: Funding Dislocation\nF001–F004 | IC 0.04–0.08\nPriority 1 — Phase 2"]
+        A2["Family 2: OI-Weighted XS Momentum\nM001–M003 | IC 0.03–0.05\nPriority 2 — Phase 2"]
+        A3["Family 3: OB Microstructure ❌\nOB001–OB003 | IC 0.04–0.09\nFull paper: Phase 3+ ONLY sau F1/F2 ≥100 fills\n[Capped paper 10% size OK nếu T2 PASS với 1.5× cost]"]
     end
 
-    subgraph RISK["🔩 Risk Model — hoc_may/to_hop_alpha/risk_model.py ❌"]
+    subgraph NEUTRAL["⚖️ Factor Neutralization — M-R8\nnghien_cuu/nha_may_alpha/factor_neutralizer.py ❌"]
         direction TB
-        R1["explicit_factor_neutralize()\nFactors: BTC, ETH, Layer1, DeFi, Meme, AI,\nAggregate Funding Rate, Exchange Spread Matrix"]
-        R2["shrink_covariance() — Ledoit-Wolf\nTRƯỚC PCA, TRƯỚC MVO"]
-        R3["pca_factor_model(residual, n_factors=3)"]
-        R4["downside_beta() — tail regime\nregime_conditional_covariance() — per regime"]
-        R1 --> R2 --> R3
-        R2 --> R4
+        N1["BTC beta neutralization\nRolling OLS 21-day window\nKill nếu R²(BTC) > 0.60"]
+        N2["ETH beta neutralization (sau BTC)"]
+        N3["Cross-sectional sector demeaning\nper 4-hour bar"]
     end
 
-    subgraph COMBINE["⚗️ AlphaCombiner ❌"]
+    subgraph REGISTRY_CHECK["📋 Alpha Registry Check — M-R9\nalpha_registry.py ❌"]
         direction TB
-        C1["effective_breadth() — BR_effective vs BR_naive\nSo sánh với BR_naive để detect fake IR"]
-        C2["marginal_ir() — ngưỡng > 0.05\ncorrelation_clustering() — tránh cluster = 1 alpha"]
-        C3["simplicity_score() — tie-break\n(simpler alpha → decay chậm hơn)"]
-        C1 --> C2 --> C3
+        RC1["Correlation vs existing alphas\nReturn series corr < 0.60"]
+        RC2["Marginal Sharpe > 0.05\n(với existing portfolio)"]
+        RC3["Similarity search vs cemetery\nKhông reinvent killed ideas"]
     end
 
-    subgraph OPT["📐 Portfolio Optimizer ❌\nhoc_may/to_hop_alpha/portfolio_optimizer.py"]
+    subgraph ERC["📐 ERC Portfolio — M-L4 (Phase 3)\nhoc_may/to_hop_alpha/erc_optimizer.py ❌"]
         direction TB
-        O1["Convex: max w^T μ - λ_risk w^T Σ w - λ_turnover ||w-w_prev||_1\nConstraints: margin_ratio ≥ 1.2\n|w_i| ≤ 0.20, ||w||_1 ≤ leverage"]
-        O2["round_to_lot(weights, lot_sizes)\nRecheck margin_ratio sau rounding"]
-        O1 --> O2
+        E1["Equal Risk Contribution\nMỗi alpha contribute equal volatility\nKhông MVO — không CVXPY"]
+        E2["Constraints:\n  gross_leverage ≤ 2.0\n  net_leverage ≤ 0.5\n  |w_symbol| ≤ 0.20 per name\n  turnover ≤ 20%/ngày two-way\n  family_exposure[F] ≤ 60%\n  (block new LIVE promotions nếu > 60%)\n  Portfolio IC kill nếu tất cả live alphas\n  trong family có rolling_ic_30d < 0.010"]
+        E3["portfolio_rebalancer.py\nDiff current vs target\nGenerate rebalance orders"]
+        COMB["combination_engine.py (Phase 3)\nIC-weighted average (không simple avg):\n  weight_i = max(0, rolling_ic_21d_i) / sum(weights)\n  Down-weight alphas đang decay tự động\n  Fallback: equal weight nếu < 21d data"]
+        E1 --> E2 --> E3
+        COMB -.->|"combined signal"| E3
     end
 
-    subgraph STRESS["🔴 Stress Test"]
+    subgraph FUNDING["💸 Funding Decomposition — M-R7"]
         direction TB
-        S1["stress_test(): BTC -30%, alts -50%, meme -80%\nDùng regime_conditional_covariance(tail)"]
-        S2["risk_attribution(): BTC < 60%, sector < 40%"]
+        FD1["raw_return = price_return + funding_income"]
+        FD2["Test IC trên price_return\nKhông tổng return (funding contaminate)"]
+        FD3["surprise_funding = realized - expected\nExpected từ Premium Index MA"]
+        FD4["⚠️ Funding settlement-aligned:\nCharge CHỈ tại settlement bars (00:00/08:00/16:00 UTC)\nChỉ khi position[t] != 0 AND position[t-1] != 0\nKhông per-bar approximation"]
+        FD1 --> FD2 --> FD3 --> FD4
     end
 
-    ALPHAS --> RISK --> COMBINE --> OPT --> STRESS
-    STRESS -->|"stress OK → PAPER"| PAPER["📝 Paper Trade"]
+    subgraph RISK_GATE["🔴 Risk Gate — M-L5\nquan_tri_rui_ro/kiem_tra_truoc_lenh/risk_gate.py ✅"]
+        direction TB
+        RG1["RG-1→RG-12: existing checks"]
+        RG2["RG-13: Inventory Skew (HHI < 0.30)\nRG-14: Cancel/Replace Storm (>10/min → pause)\nRG-15: Dead-Man Switch (heartbeat 300s)"]
+        RG3["RG-16: ADL Risk Monitor ❌\nAlert nếu ADL rank top-10%\nReduce 30% nếu top-5% → block new entries\nINV-EXC.1: references exchange_metadata.yaml"]
+        RG4["RG-17: Exchange Solvency Monitor ❌\nFTX-pattern: withdrawal freeze, insurance fund\nMax 20% capital per exchange\nHalt + initiate withdrawal 50% khi flag"]
+        RG1 --> RG2 --> RG3 --> RG4
+    end
 
-    style PAPER fill:#27ae60,color:#fff
+    subgraph ATTR["🔎 Signal Attribution (Phase 3)\nnghien_cuu/danh_gia/signal_attribution.py ❌"]
+        direction TB
+        SA1["Build khi có ≥50 paper fills\nWHY signal fired per bar:\n  signal_score = sum(coef_i × feature_i)\n  Attribution: funding_extreme=+0.42, OI_div=+0.31"]
+        SA2["Dùng để debug decay, live drift,\nfalse positives"]
+        SA1 --> SA2
+    end
+
+    ALPHAS --> NEUTRAL --> REGISTRY_CHECK --> ERC
+    FUNDING -->|"price_return IC"| ALPHAS
+    ERC --> RISK_GATE
+    RISK_GATE -->|"PASS → execute"| EXEC["thuc_thi_lenh/dong_co_thuc_thi/ems.py ✅"]
+    ERC -.->|"Phase 3"| ATTR
+
+    style A3 fill:#4a1a1a,stroke:#e74c3c,color:#fff
+    style ERC fill:#1a3c2e,stroke:#27ae60,color:#fff
+    style EXEC fill:#27ae60,color:#fff
+    style ATTR fill:#1a2e4a,stroke:#3498db,color:#fff
+    style RG3 fill:#3a1a1a,stroke:#e74c3c,color:#fff
+    style RG4 fill:#3a1a1a,stroke:#e74c3c,color:#fff
 ```
 
 ---
@@ -529,55 +615,97 @@ flowchart TB
 ```mermaid
 flowchart TB
     subgraph DEPLOY["🚀 Production"]
-        D1["thuc_thi_lenh/dong_co_tin_hieu/ml_signal_engine.py ✅\nONNX inference"]
+        D1["thuc_thi_lenh/dong_co_tin_hieu/ml_signal_engine.py ✅"]
         D2["thuc_thi_lenh/dong_co_thuc_thi/ems.py ✅"]
-        D3["quan_tri_rui_ro/ ✅\nrisk_gate + watchdog + emergency_flattener"]
+        D3["quan_tri_rui_ro/ ✅\nrisk_gate (RG-1→RG-17) + watchdog + emergency_flattener"]
         D1 --> D2 --> D3
     end
 
-    subgraph MONITOR["📡 Monitoring ✅ + ❌"]
-        direction TB
-        M1["giam_sat/chi_so_hieu_suat/collector.py ✅\nLatency • throughput • resource"]
-        M2["giam_sat/canh_bao/alert_manager.py ✅\nTelegram alerts"]
-        M3["giam_sat/reality_gap_monitor.py ❌\nDimensions: IC_live • fill_rate • turnover\nholding • slippage vs estimate\nZ-score mỗi dimension — flag |z| > 2.0\nRoot cause: IC diverge = signal mất\nSlippage diverge = execution model sai"]
-        M4["giam_sat/auto_kill.py ❌\nPrimary kill: IC_live < 30% × IC_backtest\n  sustained 20 ngày\nSecondary: Sharpe z < -2.58\nOutput: ok / scale_down / kill_candidate"]
-        M5{{"Kill condition?"}}
-        M1 --> M5
-        M2 --> M5
-        M3 --> M5
-        M4 --> M5
+    subgraph PARITY_MON["🟣 Execution Parity — M-L2\ngiam_sat/execution_parity.py ❌"]
+        EP1["signal_live_vs_research_diff()\nHourly trong paper/shadow phase\nmean_abs_diff < 0.02σ"]
+        EP2["feature_parity KS test weekly\nfill_rate, slippage vs model"]
+        EP3{{"Parity OK?"}}
+        EP1 --> EP2 --> EP3
     end
 
-    subgraph RISK_LAYER["🔴 Risk Layers — tách biệt"]
-        RL1["auto_kill.py — Alpha decay detection\n(statistical breach of IC)"]
-        RL2["quan_tri_rui_ro/risk_gate.py ✅\nPre-trade risk\n(position/notional limits)"]
-        RL3["watchdog/emergency_flattener.py ✅\nDD > threshold → flatten all\n(PnL breach)"]
-        RL1 --- RL2
-        RL2 --- RL3
+    subgraph MONITOR["📡 Performance Monitoring"]
+        direction TB
+        M1["giam_sat/chi_so_hieu_suat/collector.py ✅\nLatency • throughput • resource"]
+        M2["giam_sat/canh_bao/alert_manager.py ✅\n4-TIER ROUTING:\n  CRITICAL → Telegram 24/7 (không suppress)\n  ALERT → Telegram 00:00-20:00 UTC\n  WARNING → Daily digest 07:00 UTC\n  INFO → Log only\nSuppression: same-source 5 phút | flood >5/10min\nCool-down 30 phút sau HALT resume"]
+        M3["giam_sat/reality_gap_monitor.py ❌\nIC_live vs IC_backtest\nSlippage vs model estimate\nFlag |z| > 2.0 per dimension"]
+        M4["giam_sat/auto_kill.py ❌ — M-L3\nRolling 30d IC < 25% inception × 14 days\nHARD_DECAY + crisis → HIBERNATE (không kill)\nScheduled T2 re-val: 6 tháng OR ood > 2.5×10d"]
+        M5["nghien_cuu/nha_may_alpha/alpha_retirement.py ❌\nReview mỗi 90 ngày\nsoft_decay / crowding / exec_saturation\nFamily exhaustion: n_trials/T2_pass > 20 → alert"]
+        M6{{"Kill / Retire / Scale / Retrain / Hibernate?"}}
+        M1 --> M6
+        M2 --> M6
+        M3 --> M6
+        M4 --> M6
+        M5 --> M6
+    end
+
+    subgraph EXEC_RISK["🔴 Execution Risk Layers"]
+        RL1["RG-13: Inventory Skew\nHHI > 0.50 → reduce dominant 25%"]
+        RL2["RG-14: Cancel/Replace Storm\n>10 cancel/min → pause symbol\n>30/min → halt all"]
+        RL3["RG-15: Dead-Man Switch\nHeartbeat mất 300s → flatten all\nIndependent watchdog process"]
+        RL4["RG-9: Exchange Failure\nTimeout ×3 → halt, wait reconnect\nReconcile trước khi resume"]
+        RL5["RG-16: ADL Monitor ❌\nTop-5% → reduce 30%, block entries\n→ ALERT tier: ADL rank top-5%"]
+        RL6["RG-17: Exchange Solvency ❌\nWithdrawal freeze → CRITICAL alert\nInitiate withdrawal + halt entries\n→ CRITICAL tier: exchange solvency flag"]
+        RL1 --- RL2 --- RL3 --- RL4 --- RL5 --- RL6
     end
 
     subgraph ACTIONS["⚡ Actions"]
-        A1["🟡 SCALE DOWN\nauto_kill: scale_factor = 0.5\n+ Telegram alert"]
-        A2["🟠 KILL CANDIDATE\nMonitor 10 ngày thêm\nPost-mortem analysis"]
-        A3["🔴 HALT / FLATTEN\nEmergencyFlattener ✅\nWatchdog trigger ✅"]
-        A4["🔄 RETRAIN\nWalk-forward retrain\n(Workflow G)"]
+        A1["🟡 SCALE DOWN\nscale_factor = 0.5 + alert"]
+        A2["🟠 KILL CANDIDATE\nMonitor 10 ngày thêm"]
+        A3["🔴 HALT / FLATTEN\nEmergencyFlattener ✅"]
+        A4["🔄 RETRAIN\nWalk-forward retrain (Workflow G)"]
+        A5["📉 RETIRE\nCapital taper 25%/week\nPost-mortem → cemetery"]
+        A6["😴 HIBERNATE\nScale to 0%, giữ registry\nReactivate check 21 ngày\nMax 90 ngày"]
     end
 
-    D3 --> MONITOR
-    M5 -->|"IC decay scale_down"| A1
-    M5 -->|"IC decay kill_candidate"| A2
-    M5 -->|"DD breach"| A3
-    M5 -->|"IC drift sustainable"| A4
+    subgraph RECOVERY["🔁 Recovery Protocols"]
+        direction TB
+        REC1["RECOVERY-1 (Max DD >15%):\nPaper 14d → 25% → 50% (14d) → 100% (21d)"]
+        REC2["RECOVERY-2 (Exchange outage):\nReconcile → resume ngay (không ramp-up)"]
+        REC3["RECOVERY-3 (Feature drift CRITICAL):\nFix → paper 7d OK → resume full"]
+        REC4["RECOVERY-4 (Depeg):\nResume ngay khi peg < 0.1% sustained 2h"]
+        REC5["RECOVERY-5 (ADL top-5%):\n50% → 75% → 100% mỗi 4 giờ nếu ADL ổn định"]
+        REC6["RECOVERY-6 (IC SOFT_DECAY):\n25% → 50% (IC≥60% inception/14d) → 100% (IC≥75%/21d)"]
+        HALT_TREE["HALT DECISION TREE:\n  Infrastructure? → RECOVERY-2 or -3\n  Market condition? → RECOVERY-4 or -5\n  Signal quality? → RECOVERY-1 or -6\n  Never conflate infrastructure halt với signal decay"]
+        REC1 --- REC2 --- REC3 --- REC4 --- REC5 --- REC6 --- HALT_TREE
+    end
+
+    D3 --> PARITY_MON
+    EP3 -->|"FAIL: PAUSE + debug"| D1
+    EP3 -->|"OK"| MONITOR
+    EXEC_RISK -.->|"trigger halt"| A3
+    M6 -->|"IC decay scale_down"| A1
+    M6 -->|"IC decay kill_candidate"| A2
+    M6 -->|"DD breach"| A3
+    M6 -->|"IC drift — sustainable"| A4
+    M6 -->|"soft_decay / crowding"| A5
+    M6 -->|"HARD_DECAY + crisis regime"| A6
     A4 -->|"new model"| D1
     A1 -->|"continue monitoring"| MONITOR
-    A2 -->|"10 ngày monitor"| MONITOR
+    A2 -->|"10 ngày"| MONITOR
+    A6 -->|"IC recover → reactivate"| D1
+    A3 -.->|"apply"| RECOVERY
 
     style A1 fill:#f1c40f,color:#000
     style A2 fill:#e67e22,color:#fff
     style A3 fill:#e74c3c,color:#fff
     style A4 fill:#3498db,color:#fff
-    style RISK_LAYER fill:#2c2c2c,stroke:#e74c3c,color:#fff
+    style A5 fill:#8e44ad,color:#fff
+    style A6 fill:#5d4037,color:#fff
+    style EXEC_RISK fill:#2c2c2c,stroke:#e74c3c,color:#fff
+    style PARITY_MON fill:#4a235a,stroke:#7d3c98,color:#fff
+    style RECOVERY fill:#1a2e1a,stroke:#27ae60,color:#fff
 ```
+
+> **Dashboard Spec (4 screens — build trước ngày 1 paper trade):**
+> - **Screen 1** (Health): Daily, ≤60 giây — PnL, leverage, alpha IC status, system OK
+> - **Screen 2** (Alpha Detail): Khi có vấn đề — IC series, paper vs backtest IC, TCA breakdown
+> - **Screen 3** (TCA): Weekly — actual vs model cost, maker fill rate, urgency distribution
+> - **Screen 4** (Regime): Weekly — M-R11 state_vector, ood_score, btc_alt_corr, funding extremes
 
 ---
 
@@ -586,54 +714,57 @@ flowchart TB
 ```mermaid
 flowchart TB
     subgraph SOURCES["Nguồn dữ liệu"]
-        V["Tardis.dev / Databento\nHistorical tick • klines • L2 • funding\nAudit trail — không bị retroactive mutation"]
-        WS2["WS nội bộ ✅\nthu_thap/websocket/\n→ raw stream lưu liên tục\nPrimary source cho recent data"]
-        REST2["REST API ✅\nthu_thap/rest_api/\n⚠️ Fallback only — sàn hay retroactive-adjust"]
+        WS2["WS Gateway ✅\nthu_thap/websocket/\nPrimary source — raw stream lưu liên tục"]
+        REST2["REST API ✅\nthu_thap/rest_api/\n⚠️ Fallback only — gap fill ≤ 3 bars"]
     end
 
-    subgraph MERGE["xu_ly_lo/downloader.py ❌"]
+    subgraph LINEAGE["📋 M-D0: Data Lineage — BUILD FIRST\ndong_co_du_lieu/quan_ly_phien_ban/ ❌"]
         direction TB
-        MG1["Vendor parquet (historical T-∞ → T-30)"]
-        MG2["WS stream archive (T-30 → now)\nReconcile: khớp không? Log discrepancy"]
-        MG3["Seam check tại T-30:\n  hash_vendor(T-30) == hash_ws(T-30)?"]
-        MG4["REST fallback chỉ khi WS gap\nFlag: data_source = 'REST_fallback'\n⚠️ Không tin tưởng REST cho IC computation"]
-        MG1 --> MG3
-        MG2 --> MG3
-        MG3 -->|"seam OK"| RAW2[("ho_du_lieu/tho/\nunified parquet")]
-        MG4 -.->|"last resort"| RAW2
+        LD1["dataset_record.py\nDatasetRecord: UUID, SHA-256, derivation_type\nfeature_logic_hash, derived_from DAG"]
+        LD2["lineage_registry.py\nas_of_feature_snapshot(date) → dataset_id\nAppend-only — không delete hoặc modify"]
+        LD3["Mọi backtest PHẢI log dataset_id_used\n[INV-D0.2] không được dùng 'current data'"]
+        LD1 --> LD2 --> LD3
     end
 
-    subgraph CLEAN2["xu_ly_lo/cleaner.py ❌"]
+    subgraph GAP_REC["dong_co_du_lieu/xu_ly_lo/ ❌ — M-D2+D3 (Phase 0)"]
         direction TB
-        CL1["dedup (exchange can send duplicates)"]
-        CL2["fill_gaps():\n  gap ≤ 5 bars → ffill features, flag is_gap_filled\n  gap > 5 bars → mark symbol inactive\n  ⚠️ KHÔNG ffill OHLC / returns"]
-        CL3["winsorize features only\n(không xử lý raw returns)"]
-        CL4["pit_audit(): embargo + future probe + chronological"]
-        CL5["validate_universe_coverage(): ≥ 95%/ngày"]
-        CL1 --> CL2 --> CL3 --> CL4 --> CL5
+        GD["gap_detector.py\nScan missing bars per (exchange, symbol)\nExpected vs actual bar count"]
+        RF["rest_filler.py\nGap ≤ 3 bars → REST fill, is_gap_filled=True\nGap > 3 bars → data_quality=3 (không fill)"]
+        QT["quality_tagger.py\n0=perfect, 1=rest_filled, 2=suspect, 3=missing"]
+        PIT["pit_universe.py\nExpanding window PiT\nDelisting = -100%, không drop từ universe"]
+        SR["symbol_remapper.py\nTrack exchange renames\nSchema hash validation mỗi session"]
+        SCHV["schema_validator.py\nSCHEMA_REGISTRY per dataset type\nschema_version: int8 mandatory trong mọi Parquet\nBackward-compat read policy"]
+        GD --> RF --> QT
+        PIT --> QT
+        SR --> GD
+        SCHV --> QT
     end
 
-    subgraph LIQ["xu_ly_lo/liquidity_filter.py ❌"]
+    subgraph STORAGE["ho_du_lieu/ — Storage"]
+        RAW[("ho_du_lieu/tho/\n{exchange}/{symbol}/year/month/data.parquet\nImmutable — write-to-temp then atomic rename\nschema_version mandatory")]
+        CLEAN[("ho_du_lieu/da_xu_ly/\n+ is_gap_filled, gap_duration_s, data_quality\nBars data_quality>1 excluded từ IC calc\nschema_version mandatory")]
+        FEAT[("ho_du_lieu/kho_dac_trung/offline/\nFeatures — [DEFER Phase 1]\nschema_version mandatory")]
+    end
+
+    subgraph VALIDATE["Validation rules"]
         direction TB
-        L1["compute_true_liquidity(l2_snapshots, depth_bps=20)\nDiscount spoofing: × fill_rate per level\nDefault conservative: 20-30% of raw L2"]
-        L2["apply_liquidity_filter(universe, min_depth=50k USDT)\nRun weekly — liquidity thay đổi theo regime"]
+        V1["[INV-D1.1] event_time_ns strictly monotonic"]
+        V2["[INV-D1.2] No ffill trên raw OHLCV"]
+        V3["[INV-D1.3] recv_time_ns >= event_time_ns"]
+        V4["[INV-D2.2] data_quality=3 bars KHÔNG dùng trong IC"]
+        V5["All timestamps = UTC nanoseconds (không exception)"]
+        V6["[INV-D1.6] Bar boundary: left-inclusive, right-exclusive\nbar_start_ns <= event_time_ns < bar_end_ns\nEvent tại exactly T+1 thuộc bar T+1, không T"]
+        V7["[INV-D4.15] schema_version field mandatory\n  trong mọi Parquet file\n[INV-D4.16] Không hardcode column index\n[INV-D4.17] Required cols: crash fast | Optional: NaN"]
     end
 
-    subgraph DREG2["xu_ly_lo/dataset_registry.py ❌"]
-        direction TB
-        DR1["register(): hash chain + lineage"]
-        DR2["register_universe(): PiT symbols\nrenamed_map: LUNA→LUNC, 1000PEPE vs PEPE"]
-        DR3["register_market_structure_event():\nfunding_formula_change • stablecoin_depeg\nADL events • timestamp_drift\npost_hoc_analysis_breakpoints"]
-        DR1 --> DR2 --> DR3
-    end
-
-    V -->|"bulk download"| MERGE
-    WS2 -->|"streaming archive"| MERGE
-    REST2 -.->|"fallback"| MERGE
-    RAW2 --> CLEAN2 --> LIQ --> DREG2
+    WS2 --> RAW
+    REST2 -.->|"gap fill fallback"| GAP_REC
+    RAW --> GAP_REC --> CLEAN --> FEAT
+    LINEAGE -.->|"track dataset_id"| STORAGE
 
     style REST2 fill:#4a1a1a,stroke:#e74c3c,color:#fff
-    style V fill:#1a2e1a,stroke:#27ae60,color:#fff
+    style WS2 fill:#1a2e1a,stroke:#27ae60,color:#fff
+    style LINEAGE fill:#2e1a3e,stroke:#9b59b6,color:#fff
 ```
 
 ---
@@ -642,55 +773,175 @@ flowchart TB
 
 ```mermaid
 flowchart LR
-    POOL["Alpha Pool\n20-50 ideas/tuần\nFocus: Funding/Carry\ntrước tiên"]
+    POOL["Alpha Pool\nT0 quick screen: ~10–20/week\nFull T1+T2 eval: ~0.5–2/week\nPriority: Family 1 → Family 2 → Family 3 (blocked)"]
+
+    subgraph SM1["STAGE -1 — 15 phút\nKhông code, không data"]
+        direction TB
+        SM1A["Mechanism 2 câu có economic basis?"]
+        SM1B["Cemetery similarity < 0.85?\nalpha_cemetery.py auto-search"]
+        SM1C["Feature count ≤ 5?\nHalflife ≥ 2 bars?"]
+        SM1D["Listing cohort filter:\n  Family 2: exclude symbol < 30 ngày\n  Family 3: blocked pending F1/F2 fills"]
+        SM1A --> SM1B --> SM1C --> SM1D
+    end
 
     subgraph S0["STAGE 0 — 30 phút\nKhông code"]
         direction TB
-        S0A["1 câu hypothesis\nEconomic mechanism"]
-        S0B["Cemetery check:\nSearch_similar() trước"]
-        S0C["Halflife ≥ 20 bars?\nData available?"]
-        S0D["Pre-register:\nfeatures_locked\nparameter_ranges\nregistered_at timestamp"]
-        S0A --> S0B --> S0C --> S0D
+        S0A["Hypothesis text (immutable sau sign-off)"]
+        S0B["venue_type: agnostic / dependent"]
+        S0C["ExperimentRecord.create()\nn_trials/family tracking START\nHoldout set designated (không touch)"]
+        S0A --> S0B --> S0C
     end
 
-    subgraph S1["STAGE 1 — 2 phút\n2022-2023 subset"]
-        S1A["IC < 0.010 → KILL"]
+    subgraph T0B["T0 SCREEN — ≤15 phút\nt0_screen.py — M-R3"]
+        T0A["IC + cost gate\nDynamic threshold (effective_n)\nOverride protocol: max 2/family\nDocument trong ExperimentRecord"]
     end
 
-    subgraph S2["STAGE 2 — < 1 giờ"]
-        S2A["IC full in-sample\nIC decay curve\nfeature_exposure() R²\nIR_estimate = IC × √BR_effective"]
+    subgraph T1B["T1 VALIDATE — ≤2 giờ\nPhải pass Leakage Audit trước\nt1_validate.py — M-R4"]
+        T1A["PurgedKFold + DSR + ICIR + Regime\nICIR = mean(CV_IC) / std(CV_IC)\n  Kill nếu ICIR < 1.0, Warn nếu < 1.5\nT1.5 corr_registry + T1.6 beta + T1.7 stability\nn_trials += 1 per: feature/horizon/filter tweak"]
     end
 
-    subgraph S3["STAGE 3 — < 6 giờ\nMax 3 param sweeps"]
-        S3A["PurgedKFold CV\nDSR • PBO • BH correction\nStationary bootstrap\neffective_sample_size_warning()"]
+    subgraph T2B["T2 FULL DILIGENCE — ≤1 ngày\nt2_diligence.py — M-R5"]
+        T2A["Backtest Sharpe > 0.8 (aim 1.2)\nStress Luna + FTX + 20 random high-vol\nWalk-forward stable\nHalflife[stressed] ≥ 3 bars\nFunding: settlement-aligned (không per-bar)"]
     end
 
-    subgraph S4["STAGE 4 — < 1 ngày"]
-        S4A["Cost-adjusted IR:\n  true_liquidity (spoofing discount)\n  borrowing_cost() nếu spot short\nRegime conditional IC\nFill simulation nếu halflife < 50"]
+    subgraph NULL_HYP["NULL HYPOTHESIS BASELINE (1 lần, Gate 1→2)"]
+        direction TB
+        NH1["100 random signals (seed=99, không tune)\nRun T0 screen → expected ≤5% PASS"]
+        NH2["Run T1 trên T0-passers\n→ expected ≤2% PASS tổng"]
+        NH3["FAIL: pipeline quá lỏng → tighten thresholds\nn_trials += 0 (random signals không count)"]
+        NH1 --> NH2 --> NH3
     end
 
-    subgraph S5["STAGE 5 — < 1 ngày"]
-        S5A["Marginal IR vs existing alphas\nCorrelation clustering\nSimplicity score"]
-    end
+    KILL3["💀 KILL\nalpha_cemetery.py\nkill_reason + similarity_index update"]
+    VAL["→ PAPER TRADE\nmoi_truong_chay/paper/\nfill_capture → calibrate M-R7"]
 
-    KILL2["💀 KILL\nAutoAutopsy\n→ cemetery"]
-    VAL["→ VALIDATION lifecycle\nlifecycle = VALIDATION"]
+    POOL --> SM1
+    SM1 -->|"FAIL"| KILL3
+    SM1 -->|"PASS"| S0
+    S0 -->|"FAIL"| KILL3
+    S0 -->|"PASS"| T0B
+    T0B -->|"KILL"| KILL3
+    T0B -->|"PASS"| T1B
+    T1B -->|"FAIL"| KILL3
+    T1B -->|"PASS"| T2B
+    T2B -->|"FAIL"| KILL3
+    T2B -->|"PASS"| VAL
+    NULL_HYP -.->|"validate pipeline strict enough"| T0B
 
-    POOL --> S0
-    S0 -->|"fail"| KILL2
-    S0 -->|"pass"| S1
-    S1 -->|"fail"| KILL2
-    S1 -->|"pass"| S2
-    S2 -->|"IR < 0.30"| KILL2
-    S2 -->|"IR ≥ 0.30"| S3
-    S3 -->|"fail"| KILL2
-    S3 -->|"pass"| S4
-    S4 -->|"fail"| KILL2
-    S4 -->|"pass"| S5
-    S5 -->|"fail"| KILL2
-    S5 -->|"pass"| VAL
-
-    style KILL2 fill:#e74c3c,color:#fff
+    style KILL3 fill:#e74c3c,color:#fff
     style VAL fill:#27ae60,color:#fff
+    style SM1 fill:#8e44ad,stroke:#7d3c98,color:#fff
     style S0 fill:#1a2e3e,stroke:#3498db,color:#fff
+    style NULL_HYP fill:#2e2e1a,stroke:#f39c12,color:#fff
+```
+
+---
+
+## L. Feature Discovery Engine
+
+```mermaid
+flowchart TB
+    subgraph AUTOMATED["🤖 Automated — Tier-A Phase 1\nnghien_cuu/kham_pha_dac_trung/anomaly_miner.py"]
+        direction TB
+        AM["Scans: IC_spikes • OI_divergence\nfunding_outliers • corr_breakdown\nbasis_anomaly • vol_regime_change"]
+        FILTER["Filter: z_score > 2.5\nDedup: không log cùng anomaly 2 ngày"]
+        LOG_AUTO["observation_log.py\nPriority: high z>3.0, medium z>2.5"]
+        AM --> FILTER --> LOG_AUTO
+    end
+
+    subgraph MANUAL["👁️ Manual (Primary — Phase 0–1)"]
+        direction TB
+        NB_FAM["nghien_cuu/so_tay_jupyter/\nF001–F004 (Funding)\nM001–M003 (Momentum)\nOB001 (OB — blocked)"]
+        REPLAY_R["Market event replay\nLoad L2 + funding + OI\nVisualize → structured observation"]
+        LOG_MAN["observation_log.py\n{event, mechanism, priority}"]
+        NB_FAM --> LOG_MAN
+        REPLAY_R --> LOG_MAN
+    end
+
+    subgraph TRIAGE["📋 Weekly Hypothesis Triage"]
+        direction TB
+        PENDING["Pending hypotheses (≥ medium priority)\n10–30 entries/week target"]
+        SORT["Sort: priority × economic_novelty × data_availability"]
+        BATCH["Batch Stage -1\n~10–15 min/entry\nalpha_cemetery.py similarity check"]
+        PENDING --> SORT --> BATCH
+    end
+
+    LOG_AUTO --> TRIAGE
+    LOG_MAN --> TRIAGE
+    BATCH -->|"PASS Stage -1 → ExperimentRecord"| QUEUE["→ Alpha pipeline\nrun_alpha_pipeline.py"]
+    BATCH -->|"FAIL"| KILLED_FAST["💀 cemetery\n(< 15 phút/idea)"]
+
+    style KILLED_FAST fill:#e74c3c,color:#fff
+    style QUEUE fill:#27ae60,color:#fff
+    style AUTOMATED fill:#1a2e1a,stroke:#27ae60,color:#fff
+    style MANUAL fill:#1a1a2e,stroke:#3498db,color:#fff
+```
+
+---
+
+## M. Live Dashboard Spec
+
+```mermaid
+flowchart TB
+    subgraph DASH["📊 Live Dashboard — Build TRƯỚC ngày 1 paper trade"]
+        direction TB
+
+        subgraph S1["SCREEN 1: HEALTH (daily, ≤60 giây)"]
+            direction TB
+            H1["Portfolio: PnL today/week | Gross/net leverage | Free collateral"]
+            H2["Alpha Status: [F001 LIVE] IC_30d=X ✅|⚠️ | fills=N"]
+            H3["System: Pipeline OK | Feature OK | WAL size | Open orders"]
+            H4["Alerts: N CRITICAL, M WARNING | [see digest]"]
+            H1 --> H2 --> H3 --> H4
+        end
+
+        subgraph S2["SCREEN 2: ALPHA DETAIL (khi có vấn đề)"]
+            direction TB
+            AD1["IC series last 30d (spark-line)"]
+            AD2["IC vs inception: current/inception % — target ≥70%"]
+            AD3["Paper vs backtest IC ratio — target ≥70%"]
+            AD4["Fill rate maker actual vs target (≥0.55 BTC/ETH gate)"]
+            AD5["TCA: timing_cost | impact_cost | fee split"]
+            AD1 --> AD2 --> AD3 --> AD4 --> AD5
+        end
+
+        subgraph S3["SCREEN 3: TCA (weekly)"]
+            direction TB
+            T1["round_trip_cost actual vs model"]
+            T2["adverse_selection actual vs model\n(update research.yaml khi gap > 30%)"]
+            T3["maker_fill_rate by symbol, by hour-of-day"]
+            T4["cancel_rate by symbol (alert if > 15%)"]
+            T1 --> T2 --> T3 --> T4
+        end
+
+        subgraph S4["SCREEN 4: REGIME (weekly)"]
+            direction TB
+            R1["M-R11 state_vector last 7d:\n  regime: trending/ranging/stressed"]
+            R2["ood_score max this week\n  (alert if > 2.5 on 3+ days)"]
+            R3["btc_alt_corr rolling 7d\n  (alert if > 0.80 — crisis mode)"]
+            R4["funding_extreme: any day funding_zscore > 2.5?"]
+            R1 --> R2 --> R3 --> R4
+        end
+
+        BUILD_ORDER["Implementation priority:\nWeek 1 paper: Screen 1 + Alerts\nWeek 2: Screen 2 (Alpha Detail)\nWeek 4+: Screen 3 (TCA, sau ≥50 fills)\nMonth 2+: Screen 4 (Regime, sau M-R11 running)"]
+    end
+
+    subgraph ALERT_TIER["🔔 Alert Routing (4-tier)"]
+        direction TB
+        CR["CRITICAL → Telegram 24/7 (không suppress)\n  RG-1→RG-17 halt conditions\n  Dead-man switch fire (RG-15)\n  Exchange withdrawal freeze (RG-17)\n  Pipeline crash (live==0 khi research!=0)\n  Response: human trong 15 phút"]
+        AL["ALERT → Telegram (00:00–20:00 UTC)\n  effective_leverage > 1.8\n  feature drift pct_diff > 10%\n  ADL rank top-5% (RG-16)\n  IC SOFT_DECAY triggered\n  Response: human review trong 2 giờ"]
+        WA["WARNING → Daily digest 07:00 UTC\n  feature drift 1–10%\n  clock drift > 500ms\n  cancel rate > 15% (sub-threshold)\n  ICIR warn (< 1.5 trong paper)\n  symbol coverage < 95%"]
+        IN["INFO → Log only (không Telegram)\n  normal fills, daily IC report\n  regime state update, backtest done"]
+        SUPP["Suppression rules:\n  Same-source 5 phút: suppress duplicate\n  Flood >5 ALERT/10 min: aggregate\n  Cool-down 30 phút sau HALT resume\n  CRITICAL: không bao giờ suppressed"]
+        CR --- AL --- WA --- IN --- SUPP
+    end
+
+    S1 --> S2 --> S3 --> S4
+    ALERT_TIER -.->|"feeds alerts"| S1
+
+    style CR fill:#c0392b,stroke:#e74c3c,color:#fff
+    style AL fill:#d35400,stroke:#e67e22,color:#fff
+    style WA fill:#b7950b,stroke:#f39c12,color:#000
+    style IN fill:#1a3c1a,stroke:#27ae60,color:#fff
+    style SUPP fill:#1a1a2e,stroke:#3498db,color:#fff
 ```
