@@ -1,4 +1,4 @@
-<div align="center">
+﻿<div align="center">
  
 <img width="124" height="124" alt="image" src="https://github.com/user-attachments/assets/bf450abd-f468-43fa-9750-464e3ef95651" />
 
@@ -1906,4 +1906,3 @@ Phần này liệt kê 20 điểm kiểm tra tối thiểu trước khi triển 
 > **Kairos v3.0** — *"Thời điểm quyết định"* (Καιρός)
 >
 > Mọi microsecond đều có giá trị. Mọi dòng code đều có mục đích.
-
