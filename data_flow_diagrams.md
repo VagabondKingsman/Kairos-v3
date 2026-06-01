@@ -9,49 +9,71 @@
 ```mermaid
 flowchart TB
     subgraph SOURCE["☁️ Nguồn dữ liệu"]
-        WS_LIVE["WebSocket Gateway ✅\nbinance_ws / bybit_ws / okx_ws\nthu_thap/websocket/"]
-        REST_FB["REST API ✅\nthu_thap/rest_api/\nGap fill fallback only"]
+        WS_LIVE["WebSocket Gateway ✅\nbinance_ws / bybit_ws / okx_ws\nthu_thap/websocket/\nRunner: kich_ban/data_collector.py ✅ 2026-06-01\n→ python main.py collect"]
+        REST_FB["REST API ✅\nthu_thap/rest_api/\nGap fill fallback | Historical backfill\nBackfill runner: kich_ban/backfill_history.py ✅\n→ python main.py backfill (2yr OHLCV+Funding+OI)"]
     end
 
-    subgraph INGEST["📦 M-D1: Raw Ingestion ✅ (~90%)"]
+    subgraph INGEST["📦 M-D1: Raw Ingestion ✅ (100%)"]
         direction TB
         OHLC["xu_ly_dong/bo_loc/ohlc_engine.py\nBar boundary: left-inclusive right-exclusive\nbar_start_ns <= event_time_ns < bar_end_ns"]
         OB["xu_ly_dong/bo_loc/orderbook_engine.py"]
-        RAW[("ho_du_lieu/tho/\n{exchange}/{symbol}/year={Y}/month={M}/data.parquet\nImmutable — không sửa sau write\nschema_version: int8 mandatory")]
+        D1MODS["thu_thap/bar_processor.py ✅ • bar_types.py ✅\nsettlement_buffer.py ✅ • dead_letter_queue.py ✅\nfunding_interval_cache.py ✅ • liquidation_aggregator.py ✅\naux_parquet_writer.py ✅ • symbol_remapper.py ✅\nschema_validator.py ✅ • startup_routines.py ✅"]
+        RAW[("ho_du_lieu/tho/{exchange}/{symbol}/year={Y}/month={M}/data.parquet\nho_du_lieu/tho/{exchange}/{symbol}/long_short/\nho_du_lieu/tho/onchain/{asset}/{metric}/\nImmutable — atomic write → M-D0 register")]
     end
 
     subgraph DATA_CORE["🗝️ DATA CORE"]
         direction TB
-        subgraph MD0["📋 M-D0: Data Lineage ❌ (Phase 0 — BUILD FIRST)"]
+        subgraph MD0["📋 M-D0: Data Lineage ✅ (Phase 0 — 8 files built + tested)"]
             direction TB
-            DSREC["dong_co_du_lieu/quan_ly_phien_ban/dataset_record.py\nDatasetRecord(frozen, UUID, SHA-256, lineage DAG)\nas_of_feature_snapshot(date) → dataset_id\nMọi backtest PHẢI log dataset_id_used"]
-            LINREG["dong_co_du_lieu/quan_ly_phien_ban/lineage_registry.py\nAppend-only JSON registry\nquery by dataset_id + date\nfeature_logic_hash tracking"]
-            DSREC --- LINREG
+            DSREC["quan_ly_phien_ban/dataset_record.py ✅\nDatasetRecord + VerificationRecord dataclasses\ncanonical Arrow IPC hash (column+row sorted)\ncompute_feature_logic_hash (AST-based)\nwrite_and_register() atomic + verify_fn hook"]
+            LINREG["quan_ly_phien_ban/lineage_registry.py ✅\nAppend-only JSONL registry\nnext_version() atomic allocation\nstartup orphan sweep\nLINEAGE_ROOT env var (absolute path)"]
+            VERREG["quan_ly_phien_ban/verification_registry.py ✅\nis_production_verified(dataset_id) → bool\nFAILED verifications PHẢI persist"]
+            EXC["quan_ly_phien_ban/exceptions.py ✅\nLineageError hierarchy\nImmutabilityError, PITViolationError, ..."]
+            LOCK["quan_ly_phien_ban/_locking.py ✅\ncross-platform file lock + fsync\nUnix fcntl / Windows msvcrt"]
+            PITV["quan_ly_phien_ban/pit_verifier.py ✅\nverify_pit_production(sample≥500, random seed)\nstratified sampling: warmup/recent/edge/random"]
+            SLLP["quan_ly_phien_ban/symbol_lifecycle_poller.py ✅\n[daemon] daily REST poll\n→ symbol_lifecycle_raw.parquet (state-based intervals)\nConsumer: M-D2 + M-D3"]
+            DSREC --- LINREG --- VERREG
+            EXC -.-> DSREC
+            LOCK -.-> LINREG
+            PITV -.-> VERREG
         end
 
-        subgraph GAP["🔧 M-D2+D3: Gap & Universe ❌ (Phase 0)"]
+        subgraph GAP["🔧 M-D2 ✅ Done (8 files) | M-D3 ✅ Done (3 files)"]
             direction TB
-            GAPDET["xu_ly_lo/gap_detector.py\nScan missing bars, expected vs actual"]
-            RESTFILL["xu_ly_lo/rest_filler.py\ngap ≤ 3 bars → REST fill, is_gap_filled=True\ngap > 3 bars → data_quality=3"]
-            PITUNIV["xu_ly_lo/pit_universe.py\nExpanding window — không look-ahead\nDelisting = -100% return, không drop"]
-            SYMREMAP["xu_ly_lo/symbol_remapper.py\nTrack exchange renames (DEFI-PERP→DEFIUSDT)"]
-            SCHVAL["xu_ly_lo/schema_validator.py\nSCHEMA_REGISTRY per dataset type\nschema_version mandatory — backward compat read"]
+            MAINT["xu_ly_lo/maintenance_event_logger.py ✅\n[daemon] poll exchange status mỗi 5min\n→ maintenance_log_{date}.parquet + daemon_heartbeat.json\nconfidence: HIGH (daemon) | LOW (manual_override)"]
+            GAPDET["xu_ly_lo/gap_detector.py ✅\nScan missing/suspect bars\nzombie volume: MAD robust_zscore (two-tail)\nbaseline = history only (no look-ahead)\ngap manifest TRƯỚC fill (detection fields immutable)"]
+            RESTFILL["xu_ly_lo/rest_filler.py ✅\ngap ≤ max_gap_duration_s → REST fill (async)\nfill_gap() → (df, quality, reason)\nINTRA-GAP CONTINUITY + BOUNDARY (SYMMETRIC)\nRIGHT denom = bars[-1].close | HTTP 418/429 backoff"]
+            RFUND["xu_ly_lo/reconcile_funding_rates.py ✅\nfunding_rate_raw + funding_interval_min\nfunding_published_ns (anti-lookahead)\nreceived_ns set SAU response | FAIL LOUD cache miss"]
+            QTAG["xu_ly_lo/quality_tagger.py ✅\ndata_quality: 0/1/2/3/4\ndaemon stale → quality=3 (không skip)\ncoverage report aggregate từ batch runner"]
+            SCHVAL["xu_ly_lo/schema_validator.py ✅\nMD2_SCHEMA explicit PyArrow (26 cols)\nschema_version mandatory trong mọi Parquet\nwrite_with_schema_version() atomic"]
+            RECONCILE["xu_ly_lo/reconcile.py ✅\nMain orchestrator steps 0–7\nrun_reconciliation_batch() → coverage report\nMD2_SCHEMA ép type tại write time"]
+            PITUNIV["xu_ly_lo/pit_universe.py ✅\n+ symbol_remapper.py ✅ + asset_registry.db ✅\nknown_at semantics | UUID v5 asset_id\nLifecycle: ACTIVE/SUSPECTED_DELIST/DELISTED\nin_entry_universe gate | circuit breaker\npit_audit() | universe_health_check()"]
             EXCMETA["cau_hinh/exchange_metadata.yaml ✅\nSINGLE SOURCE OF TRUTH:\nfunding schedule, min_order_size,\nfee_tiers, liquidation engine\nINV-EXC.1: adapters reference đây, không hardcode"]
-            CLEAN[("ho_du_lieu/da_xu_ly/\n+ is_gap_filled, gap_duration_s, data_quality\nschema_version field mandatory")]
-            GAPDET --> RESTFILL --> CLEAN
-            PITUNIV --> CLEAN
-            SYMREMAP --> GAPDET
-            SCHVAL --> CLEAN
+            CLEAN[("ho_du_lieu/da_xu_ly/\n+ is_gap_filled, gap_duration_s\n+ data_quality (0/1/2/3/4)\n+ funding_rate_raw, funding_interval_min\n+ funding_published_ns, funding_rate_stale\n+ close_time_ns, funding_rate_annual")]
+            MANIFEST[("ho_du_lieu/gap_manifest/{date}/\n{exchange}_{symbol}.json\nAudit artifact — detection fields IMMUTABLE")]
+            COVERAGE[("ho_du_lieu/bao_cao_phu_song/{date}.json\nDaily coverage report — always generated")]
+            MAINT --> GAPDET
+            GAPDET --> RESTFILL
+            RESTFILL --> QTAG
+            RFUND --> RECONCILE
+            QTAG --> RECONCILE
+            SCHVAL --> RECONCILE
+            RECONCILE --> CLEAN
+            RECONCILE --> MANIFEST
+            RECONCILE --> COVERAGE
+            PITUNIV -->|"asset_id + sector"| CLEAN
             EXCMETA -.->|"reference"| GAPDET
+            SLLP -.->|"symbol_lifecycle_raw"| GAPDET
         end
     end
 
-    subgraph FEATURE_LAYER["🔩 M-D4: Feature Cache ❌ [DEFER — Phase 1]"]
+    subgraph FEATURE_LAYER["🔩 M-D4: Feature Cache ✅ Done (5 files)"]
         direction TB
-        FB["xu_ly_lo/feature_builder.py\nbuild_batch_features()\nGọi CÙNG feature_registry với live"]
-        FR["ong_dan_dac_trung/online/feature_registry.py ✅\nBit-exact: live == batch tolerance 1e-6"]
-        FSPEC["nghien_cuu/khung_alpha/feature_spec.py ❌ (Phase 1)\nFeatureSpec dataclass registry\nMọi feature phải có FeatureSpec entry\ntrước khi dùng trong T0/T1/T2\npit_safe=True verified"]
-        IE["ong_dan_dac_trung/online/incremental_engine.py ✅\nLive realtime"]
+        FB["xu_ly_lo/feature_cache.py ✅\nFeatureCache: get_or_compute(), atomic write\ncache_hash 12-char | idempotent skip\nBTC-first ordering (INV-D4.28)"]
+        FB_L2["xu_ly_lo/pre_aggregate_l2.py ✅\nL2Snapshot binary store (KHÔNG delete)\nOFI formula (Cont 2014) | book_pressure_5min\naggregate_l2_features() batch per-day"]
+        FR["nghien_cuu/khung_alpha/feature_registry.py ✅\nFEATURE_REGISTRY: 12 FeatureFn\nWinsorize [1%,99%] return; 5×IQR funding/OI\nWelford funding_z; OLS 504 bars btc_neutral\nIncrementalFeatureEngine + FeatureSpecRegistry"]
+        FSPEC["nghien_cuu/khung_alpha/feature_spec.py ✅\n12 FeatureSpec entries + FEATURE_SPEC_MAP\nDAG cycle validation tại import time\nMọi feature phải có entry trước T0/T1/T2"]
+        IE["ong_dan_dac_trung/online/incremental_engine.py ✅\nIncrementalFeatureEngine — live realtime\nSync emit: NaN all nếu bất kỳ feature chưa warm"]
         FEAT[("ho_du_lieu/kho_dac_trung/offline/\nfeatures_*.parquet\nschema_version mandatory")]
         MEM[("ho_du_lieu/kho_dac_trung/online/memory_store.py ✅\nLive in-memory")]
         FB -->|"calls same functions"| FR
@@ -70,7 +92,7 @@ flowchart TB
         M_R3["nghien_cuu/nha_may_alpha/t0_screen.py — M-R3 T0\n≤15 min | IC < 0.025 → KILL"]
         M_R4["nghien_cuu/nha_may_alpha/t1_validate.py — M-R4 T1\nPurgedKFold + DSR + ICIR + Regime | ≤2 hr"]
         M_R5["nghien_cuu/nha_may_alpha/t2_diligence.py — M-R5 T2\nStress + Walk-Forward | ≤1 day"]
-        REGISTRY["nghien_cuu/nha_may_alpha/alpha_registry.py — M-R9\nalpha_cemetery.py — Kill tracking"]
+        REGISTRY["nghien_cuu/nha_may_alpha/alpha_registry.py — M-R9\nalpha_cemetery.py — Kill tracking\nlifecycle.py — Stage gate validation"]
     end
 
     subgraph DEPLOY["🚀 Live Core ✅/❌"]
@@ -79,7 +101,7 @@ flowchart TB
         SIG["thuc_thi_lenh/dong_co_tin_hieu/ml_signal_engine.py ✅\nONNX inference"]
         EMS["thuc_thi_lenh/dong_co_thuc_thi/ems.py ✅"]
         RG["quan_tri_rui_ro/kiem_tra_truoc_lenh/risk_gate.py ✅ (~70%) — M-L5\nRG-1 to RG-17 pre-trade checks\nINV-EXC.1: exchange_metadata.yaml reference"]
-        MON["giam_sat/ ❌\nexecution_parity.py • reality_gap_monitor.py • auto_kill.py"]
+        MON["giam_sat/ ❌ (Phase 2)\nexecution_parity.py • reality_gap_monitor.py • auto_kill.py\ngiam_sat/canh_bao/alert_manager.py"]
     end
 
     WS_LIVE --> OHLC --> RAW
@@ -87,6 +109,7 @@ flowchart TB
     REST_FB -.->|"fallback only"| GAP
     RAW --> GAP
     MD0 -.->|"dataset_id gate"| RESEARCH
+    SLLP -.->|"symbol_lifecycle_raw.parquet"| GAP
     CLEAN --> FB
     FEAT --> M_R1
     M_R1 --> M_R3
@@ -103,6 +126,8 @@ flowchart TB
     style SOURCE fill:#1a1a2e,stroke:#e94560,color:#fff
     style DEPLOY fill:#0f3460,stroke:#16213e,color:#fff
     style GAP fill:#1a2e1a,stroke:#27ae60,color:#fff
+    style MANIFEST fill:#0a1a0a,stroke:#27ae60,color:#aaa
+    style COVERAGE fill:#0a1a0a,stroke:#27ae60,color:#aaa
     style RESEARCH fill:#1a1a3e,stroke:#3498db,color:#fff
     style MD0 fill:#2e1a3e,stroke:#9b59b6,color:#fff
     style DATA_CORE fill:#0a0a1a,stroke:#555,color:#fff
@@ -156,7 +181,7 @@ flowchart LR
         T2_1["T2.1: Vectorized backtest 2 năm\nSharpe > 0.8 (aim 1.2) | max_dd < 25%\nir_vs_benchmark ≥ 0.20\nexecution_lag_bars=1, execution_price=open_next\nrolling_vol_window=21 bars\nFunding settlement-aligned (không per-bar):\n  charge CHỈ khi position open TRƯỚC và TẠI settlement"]
         T2_2["T2.2: Walk-forward 6 windows\nwf_ic_std < 0.50 × wf_ic_mean\n[WF dates PHẢI pre-defined trong research.yaml ✅\ncùng lúc với t1_fold_dates — BLOCKED nếu không có]"]
         T2_3["T2.3: Stress test\nLuna + FTX (mandatory) + 20 random high-vol (seed cố định)\npass ≥ 14/20 random periods"]
-        T2_4["T2.7: Marginal Sharpe > 0.05\nT2.8: IC halflife[stressed] ≥ 3 bars\nT2.9: Dual fill — Scenario A ≥ 0.80 AND Scenario B ≥ 0.75\nCascade exit: cascade_impact < 0.30"]
+        T2_4["Dual fill: Scenario A ≥ 0.80 AND Scenario B ≥ 0.75\n(Scenario B gate thấp hơn 5% = fill rate haircut, không phải free pass)\nT2.7: Marginal Sharpe > 0.05\nT2.8: IC halflife[stressed] ≥ 3 bars\nT2.9: Cascade Exit — cascade_impact < 0.30\n(M-R11 Mode B live/backtest gap)"]
         T2_5{{"ALL checks pass?\nLive haircut expect: 30–60% từ backtest IC"}}
         T2_1 --> T2_2 --> T2_3 --> T2_4 --> T2_5
     end
@@ -209,10 +234,10 @@ flowchart TB
     GT1{{"mean_cv_ic > 0.020?\nICIR > 1.0 (kill nếu < 1.0)?\nDSR > 0.50 (n_trials_total)?\nNo regime IC < -0.010?\ncorr_registry < 0.60?\n|residual_beta| < 0.15?\nRidge stability > 2.0?\nT1.8: ic_short check?"}}
 
     T2["T2 FULL DILIGENCE — ≤1 ngày\nt2_diligence.py — M-R5"]
-    GT2{{"Sharpe > 0.8? max_dd < 25%?\nir_vs_benchmark ≥ 0.20?\nwf_ic stable? WF dates pre-defined?\nStress Luna+FTX + 20 random periods?\nDual fill A≥0.80 AND B≥0.75?\ncascade_impact < 0.30?\nFunding settlement-aligned?"}}
+    GT2{{"Sharpe > 0.8? max_dd < 25%?\nir_vs_benchmark ≥ 0.20?\nwf_ic stable? WF dates pre-defined?\nLuna 2022-05-07/14 + FTX 2022-11-07/14 + 20 random?\nDual fill A≥0.80 AND B≥0.75?\nT2.9: cascade_impact < 0.30?\nFunding settlement-aligned?"}}
 
-    PAPER["📝 PAPER TRADE\nmoi_truong_chay/paper/ ✅\n≥ 60 trading days\nfill_capture.py → calibrate M-R7\n[ic_short < -0.01 → max_short_weight ≤ 50%]"]
-    GP{{"Live IC ≥ 70% backtest IC?\npaper_ic_absolute ≥ 0.025?\nRolling 10d IC ≥ 0.015 mọi window?\nSlippage ≤ 2× model estimate?\nExecution parity OK?\n[ic_short ổn định trong paper gate?]"}}
+    PAPER["📝 PAPER TRADE\nmoi_truong_chay/paper/ ✅\n≥ 60 trading days (M-R9 SHADOW gate)\nInterim check sau 30 ngày: IC ≥ 70% backtest\nfill_capture.py → calibrate M-R7\n[ic_short < -0.01 → max_short_weight ≤ 50%]"]
+    GP{{"Live IC ≥ 70% backtest IC?\npaper_ic_absolute ≥ 0.025?\nRolling 10d IC ≥ 0.015 mọi window?\nSlippage ≤ 2× model estimate?\nExecution parity OK?\n[ic_short ổn định trong paper gate?]\n≥ 60 trading days đủ?"}}
 
     LIVE["🚀 LIVE TRADE\nReal capital (small)\nAll risk gates active\nScheduled T2 re-val: 6 tháng"]
     GL2{{"Rolling 30d IC ≥ 25% inception\nsustained ≥ 14 ngày?\nDD < 15%?"}}
@@ -273,8 +298,8 @@ flowchart TB
 ```mermaid
 flowchart TB
     subgraph SHARED["🔗 Shared Code — CÙNG file, CÙNG function"]
-        FR["ong_dan_dac_trung/online/feature_registry.py ✅\nBit-exact: live == batch, tolerance 1e-6\nKS test weekly — giam_sat/execution_parity.py"]
-        FSPEC2["nghien_cuu/khung_alpha/feature_spec.py ❌ (Phase 1)\nFeatureSpec registry — pit_safe, live_ready flags\nMọi feature cần entry trước T0/T1/T2"]
+        FR["nghien_cuu/khung_alpha/feature_registry.py ✅\nFEATURE_REGISTRY: 12 FeatureFn\nSingle source — batch + live import từ đây\nBit-exact: live == batch tolerance 1e-6\nKS test weekly — giam_sat/execution_parity.py"]
+        FSPEC2["nghien_cuu/khung_alpha/feature_spec.py ✅\nFeatureSpec — 12 entries registered\npit_safe, live_ready, category\northogonal_group, decay_half_life_bars"]
         PS["thuc_thi_lenh/quan_ly_danh_muc/thoat_vi_the/position_sizer.py ✅"]
         ES["thuc_thi_lenh/quan_ly_danh_muc/thoat_vi_the/strategies/ ✅\nfixed_percent, trailing, time_based, atr_based"]
         CM["nghien_cuu/nha_may_alpha/cost_model.py ❌\nDùng cùng model cho backtest + live check"]
@@ -300,8 +325,8 @@ flowchart TB
         direction TB
         PQ["ho_du_lieu/tho/ + ho_du_lieu/da_xu_ly/\nRaw + gap-flagged Parquet\nschema_version mandatory"]
         GAP_MOD["dong_co_du_lieu/xu_ly_lo/\ngap_detector • rest_filler • quality_tagger\npit_universe • symbol_remapper"]
-        FB2["xu_ly_lo/feature_builder.py ❌\nbuild_batch_features()\nVerify FeatureSpec entry trước khi compute"]
-        FEAT2["ho_du_lieu/kho_dac_trung/offline/\nfeatures_*.parquet [DEFER Phase 1]"]
+        FB2["xu_ly_lo/feature_cache.py ✅\nFeatureCache.get_or_compute()\nVerify FeatureSpec + FEATURE_REGISTRY entry\nAtomic write (INV-D4.23) | cache_hash 12 chars"]
+        FEAT2["ho_du_lieu/kho_dac_trung/offline/\n{cache_hash_12}/{asset_id}__{start}_{end}.parquet\nProvenance: feature_logic_hash, data_version"]
         BT2["nghien_cuu/dong_co_phat_lai/vectorized_backtest.py ❌\nPolars-based — M-R6\nFunding: settlement-aligned only"]
 
         PQ --> GAP_MOD --> FB2
@@ -378,7 +403,7 @@ flowchart LR
         T2G1["Vectorized backtest 2 năm (Polars)\nSharpe > 0.8 | aim 1.2 | max_dd < 25%\nir_vs_benchmark ≥ 0.20\nexecution_lag_bars=1 (open_next)\nrolling_vol_window=21\nFunding settlement-aligned (không per-bar):\n  charge chỉ tại bar settlement khi position open"]
         T2G2["Walk-forward 6 windows\nwf_ic_std < 0.50 × wf_ic_mean\n[BLOCKED nếu wf_test_dates không có\ntrong research.yaml ✅ trước T1]"]
         T2G3["Stress: Luna 2022-05 + FTX 2022-11\n+ 20 random high-vol (seed cố định) ≥ 14/20 pass\nNot negative BOTH mandatory periods"]
-        T2G4["T2.7: marginal_sharpe > 0.05\nT2.8: IC halflife[stressed] ≥ 3 bars\nT2.9: Dual fill A≥0.80 AND B≥0.75\nCascade exit: cascade_impact < 0.30"]
+        T2G4["T2.7: marginal_sharpe > 0.05\nT2.8: IC halflife[stressed] ≥ 3 bars\nDual fill: Scenario A ≥ 0.80 AND Scenario B ≥ 0.75\n(Scenario B gate thấp hơn 5% = fill rate haircut, không phải free pass)\nT2.9: Cascade Exit — cascade_impact < 0.30"]
         T2G5{{"ALL pass?\nExpect 30–60% IC haircut live"}}
         T2G1 --> T2G2 --> T2G3 --> T2G4 --> T2G5
     end
@@ -507,7 +532,7 @@ flowchart TB
 
     subgraph SWAP["🔀 Model Swap"]
         direction TB
-        S1["hoc_may/huan_luyen/onnx_exporter.py ❌ (Phase 4)\nExport v2 → ONNX"]
+        S1["hoc_may/huan_luyen/onnx_exporter.py ❌ (Phase 2)\nExport v2 → ONNX"]
         S2["Shadow ≥ 21 ngày: v1 trade, v2 observe\n[min 21d — ~120 bars đủ statistical power]"]
         S3{{"v2 execution_parity OK?\nv2 reality_gap OK?"}}
         S4["Hot-swap: v1 → v2\nmodel_registry.py update"]
@@ -714,11 +739,11 @@ flowchart TB
 ```mermaid
 flowchart TB
     subgraph SOURCES["Nguồn dữ liệu"]
-        WS2["WS Gateway ✅\nthu_thap/websocket/\nPrimary source — raw stream lưu liên tục"]
-        REST2["REST API ✅\nthu_thap/rest_api/\n⚠️ Fallback only — gap fill ≤ 3 bars"]
+        WS2["WS Gateway ✅\nthu_thap/websocket/\nPrimary — raw stream lưu liên tục\nRunner: kich_ban/data_collector.py ✅ (2026-06-01)\n  BinanceGateway → BarBuilder(1h) → Parquet\n  OI poll 5min | midnight flush\n  python main.py collect"]
+        REST2["REST API ✅\nthu_thap/rest_api/\nGap fill ≤ 3 bars | Historical backfill\nBackfill: kich_ban/backfill_history.py ✅\n  /klines + /fundingRate + /openInterestHist\n  2yr history, 335K bars loaded (2026-06-01)\n  python main.py backfill"]
     end
 
-    subgraph LINEAGE["📋 M-D0: Data Lineage — BUILD FIRST\ndong_co_du_lieu/quan_ly_phien_ban/ ❌"]
+    subgraph LINEAGE["📋 M-D0: Data Lineage ✅\ndong_co_du_lieu/quan_ly_phien_ban/"]
         direction TB
         LD1["dataset_record.py\nDatasetRecord: UUID, SHA-256, derivation_type\nfeature_logic_hash, derived_from DAG"]
         LD2["lineage_registry.py\nas_of_feature_snapshot(date) → dataset_id\nAppend-only — không delete hoặc modify"]
@@ -726,18 +751,17 @@ flowchart TB
         LD1 --> LD2 --> LD3
     end
 
-    subgraph GAP_REC["dong_co_du_lieu/xu_ly_lo/ ❌ — M-D2+D3 (Phase 0)"]
+    subgraph GAP_REC["dong_co_du_lieu/xu_ly_lo/ — M-D2 ✅ Done | M-D3 ✅ Done"]
         direction TB
-        GD["gap_detector.py\nScan missing bars per (exchange, symbol)\nExpected vs actual bar count"]
-        RF["rest_filler.py\nGap ≤ 3 bars → REST fill, is_gap_filled=True\nGap > 3 bars → data_quality=3 (không fill)"]
-        QT["quality_tagger.py\n0=perfect, 1=rest_filled, 2=suspect, 3=missing"]
-        PIT["pit_universe.py\nExpanding window PiT\nDelisting = -100%, không drop từ universe"]
-        SR["symbol_remapper.py\nTrack exchange renames\nSchema hash validation mỗi session"]
-        SCHV["schema_validator.py\nSCHEMA_REGISTRY per dataset type\nschema_version: int8 mandatory trong mọi Parquet\nBackward-compat read policy"]
-        GD --> RF --> QT
-        PIT --> QT
-        SR --> GD
-        SCHV --> QT
+        GD["gap_detector.py ✅\nScan missing bars per (exchange, symbol)\nzombie: MAD robust_zscore, baseline = history only\nExpected vs actual bar count"]
+        RF["rest_filler.py ✅\nfill_gap() → (df, quality, reason)\nGap ≤ 3h → REST fill, is_gap_filled=True\nGap > 3h → data_quality=3 | continuity fail → quality=3"]
+        QT["quality_tagger.py ✅\n0=perfect, 1=rest_filled, 2=suspect, 3=missing, 4=maintenance\ndaemon stale → quality=3 (không bỏ qua marking)"]
+        REC["reconcile.py ✅\nOrchestrator steps 0–7\nMD2_SCHEMA explicit PyArrow schema\ncoverage report từ batch runner"]
+        SCHV["schema_validator.py ✅\nMD2_SCHEMA: 26 columns explicit type\nschema_version=1 mandatory trong mọi output Parquet\nwrite_with_schema_version() atomic"]
+        PIT["pit_universe.py ✅\n+ symbol_remapper.py ✅ + asset_registry.db ✅\nknown_at semantics | UUID v5 asset_id\nLifecycle 3 states + in_entry_universe\nseed_sector_assignments.py ✅"]
+        GD --> RF --> QT --> REC
+        SCHV --> REC
+        PIT -.->|"Phase 1"| REC
     end
 
     subgraph STORAGE["ho_du_lieu/ — Storage"]
@@ -841,7 +865,7 @@ flowchart LR
 
 ```mermaid
 flowchart TB
-    subgraph AUTOMATED["🤖 Automated — Tier-A Phase 1\nnghien_cuu/kham_pha_dac_trung/anomaly_miner.py"]
+    subgraph AUTOMATED["🤖 Automated — TIER-B\nnghien_cuu/kham_pha_dac_trung/anomaly_miner.py"]
         direction TB
         AM["Scans: IC_spikes • OI_divergence\nfunding_outliers • corr_breakdown\nbasis_anomaly • vol_regime_change"]
         FILTER["Filter: z_score > 2.5\nDedup: không log cùng anomaly 2 ngày"]
