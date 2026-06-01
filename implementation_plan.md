@@ -1,8 +1,8 @@
-# KAIROS v3.2 — Implementation Plan
+﻿# KAIROS v3.2 — Implementation Plan
 
 Mid-Frequency Systematic Trading — Microstructure-Aware Architecture
 
-**Version:** 16 | **Date:** 2026-05-16 | **Horizon:** 18 tháng
+**Version:** 20 | **Date:** 2026-06-01 | **Horizon:** 18 tháng
 **Target:** 2–3 live alphas, top-20 crypto perps, capacity $500K–$2M/strategy *(aspirational — validate từ live fills, crowding thực tế, và fee tier sau Phase 2)*
 
 ---
@@ -27,43 +27,142 @@ Mỗi module được viết như một **mắc xích độc lập**: có thể 
 
 ## Sơ đồ cấu trúc file — Module → Folder Mapping
 
-Tổng: **65 file Tier-A** + **3 file Tier-B** = **68 file mới** (bao gồm 2 file M-D0 Phase 0).
+Tổng kế hoạch: **70 Tier-A** + **3 Tier-B** = **73 file mới**. Đã build: **M-D0 (8 files ✅)** + **M-D1 new modules (10 files ✅)** + **M-D2 (8 files ✅)** + **M-D3 (3 files ✅)** + **M-D4 (5 files ✅)**.
 Ký hiệu: `★` = file quan trọng nhất trong folder | `[existing]` = folder đã có | `[new]` = tạo mới
 
 ---
 
-### PHASE 0 — TIER A (2 files — build song song với M-D1, trước PHASE 1)
+### PHASE 0 — TIER A ✅ DONE (8 files — M-D0 complete + tested)
 
 ```text
-dong_co_du_lieu/quan_ly_phien_ban/  [new]  2 files  ← M-D0 Data Lineage Registry
+dong_co_du_lieu/quan_ly_phien_ban/  [built]  8 files  ← M-D0 Data Lineage Registry
 │  Module coverage: M-D0 (Data Lineage — foundational, không phụ thuộc module nào)
-│  [BUILD FIRST — Gate 0→1 yêu cầu M-D0 operational]
-├── ★ dataset_record.py             ← DatasetRecord dataclass (frozen, UUID, SHA-256, lineage DAG)
+│  Status: ✅ BUILT + TESTED — 25 unit tests | write_and_register() atomic + verify_fn hook
+├── ★ dataset_record.py             ← DatasetRecord + VerificationRecord dataclasses + canonical hashing
+│                                     compute_content_hash(path, natural_key) → SHA-256 Arrow IPC
+│                                     compute_feature_logic_hash(fn) → AST-based hash
 │                                     as_of_feature_snapshot(date) → dataset_id
 │                                     Mọi backtest PHẢI log dataset_id_used vào đây
-└── lineage_registry.py             ← append-only JSON registry, query by dataset_id + date
-                                      feature_logic_hash tracking, as_of snapshot lookup
+├── lineage_registry.py             ← append-only JSONL registry, query by dataset_id + date
+│                                     feature_logic_hash tracking, as_of snapshot lookup
+│                                     startup orphan sweep, next_version() atomic allocation
+│                                     LINEAGE_ROOT env var (absolute path bắt buộc)
+├── verification_registry.py        ← append-only JSONL registry cho VerificationRecord
+│                                     is_production_verified(dataset_id) → bool
+│                                     record_verification() persist kể cả khi passed=False
+├── exceptions.py                   ← LineageError hierarchy (tất cả custom exceptions của M-D0)
+│                                     ImmutabilityError, PITViolationError, AsOfNotFoundError, v.v.
+├── _locking.py                     ← cross-platform file lock với fsync (Unix fcntl / Windows msvcrt)
+│                                     append_locked(path, line) — durability boundary
+├── pit_verifier.py                 ← PIT no-lookahead verifier (dev + production modes)
+│                                     verify_pit_production(sample_size≥500, random seed)
+│                                     Stratified sampling: warmup / recent / edge / random strata
+│                                     FAILED verifications PHẢI persist (audit trail)
+└── symbol_lifecycle_poller.py      ← [daemon] daily REST poll exchange info → symbol_lifecycle_raw.parquet
+                                      derivation_type="raw", symbol=None (universe-level)
+                                      Consumer: M-D2 (expected_bar_set) + M-D3 (universe)
 ```
 
 ---
 
-### PHASE 1 — TIER A (42 files + 4 additional)
+### PHASE 0.5 — TIER A ✅ DONE (8 files — M-D2 complete + tested)
 
 ```text
-dong_co_du_lieu/xu_ly_lo/          [new]  8 files  ← M-D2 gap + M-D3 PiT + M-D4 L2 batch
-│  Module coverage: M-D2 (Gap Reconciliation), M-D3 (PiT Universe), M-D4 (L2 pre-agg)
-├── pre_aggregate_l2.py             ← L2 orderbook → 5-min aggregated features
-│                                     [CRITICAL] Lưu raw L2 snapshots song song trước khi aggregate.
-│                                     Tick data không thể reconstruct từ aggregates.
-│                                     Cần cho HFT project sau này. Storage cost thấp.
-├── reconcile_borrow_rates.py       ← merge borrow rate từ Coinglass vào bars
-├── gap_detector.py                 ← scan missing bars per (exchange, symbol)
-├── rest_filler.py                  ← fill gap ≤3 bars từ REST, mark is_gap_filled
-├── quality_tagger.py               ← assign data_quality: 0/1/2/3
-├── ★ pit_universe.py               ← expanding window, no look-ahead, delisting handler
-├── symbol_remapper.py              ← track exchange renames (DEFI-PERP → DEFIUSDT)
-└── schema_validator.py             ← validate Parquet schema hash + schema_version tracking
-                                      SCHEMA_REGISTRY per dataset type, backward-compat read policy
+dong_co_du_lieu/xu_ly_lo/          [built]  8 files  ← M-D2 Gap Reconciliation
+│  Module coverage: M-D2 (Gap Reconciliation — nightly batch pipeline)
+│  Status: ✅ BUILT + TESTED — 37 unit tests (test/test_d2_gap_reconciliation.py)
+│  Output: ho_du_lieu/da_xu_ly/ + ho_du_lieu/gap_manifest/ + ho_du_lieu/bao_cao_phu_song/
+│  Entry point: python -m dong_co_du_lieu.xu_ly_lo.reconcile --yesterday --exchange binance
+├── ★ reconcile.py                  ← Main orchestrator steps 0–7, CLI entry point, batch runner
+│                                     MD2_SCHEMA explicit PyArrow schema (26 columns)
+│                                     run_reconciliation_batch() → aggregate coverage report
+├── schema_validator.py             ← validate output Parquet schema + version (P0)
+│                                     write_with_schema_version() atomic write
+│                                     SCHEMA_VERSION=1 mandatory trong mọi output Parquet
+├── maintenance_event_logger.py     ← [daemon] poll exchange status mỗi 5min
+│                                     ghi maintenance_log_{date}.parquet (daily rotate)
+│                                     ghi daemon_heartbeat.json + stale check (>15min → alert)
+│                                     confidence: HIGH (daemon_poll) | LOW (manual_override)
+│                                     constraint: event_type="unknown" → confidence PHẢI "LOW"
+├── gap_detector.py                 ← scan missing/suspect bars; produce gap manifest trước khi fill
+│                                     zombie volume: MAD robust_zscore (two-tail, cold-start guard)
+│                                     BASELINE from history only (t-1→t-30) — không include today
+│                                     Detection fields IMMUTABLE sau khi written (INV-D2.4)
+├── rest_filler.py                  ← fill gap ≤ max_gap_duration_s từ REST (async)
+│                                     fill_gap() → (DataFrame, quality, reason) — reason authoritative
+│                                     INTRA-GAP CONTINUITY (4 checks) + BOUNDARY validation (SYMMETRIC)
+│                                     RIGHT boundary denominator = bars[-1].close (không ws_after.open)
+│                                     HTTP 418→60s backoff | 429+header→wait theo header
+├── quality_tagger.py               ← finalize data_quality: 0/1/2/3/4 + coverage report
+│                                     daemon stale → vẫn mark bars, dùng quality=3 thay vì 4
+│                                     compute_coverage_report() called từ run_reconciliation_batch()
+├── reconcile_funding_rates.py      ← merge funding rate, anti-lookahead, stale propagation
+│                                     received_ns set SAU await resp.json() (response_received_time_ns)
+│                                     _check_funding_cache_freshness() trong load_funding_schedule()
+│                                     FAIL LOUD nếu cache miss — không fallback 8h silent
+└── __init__.py                     ← package marker
+```
+
+---
+
+### PHASE 0.75 — TIER A ✅ DONE (3 files — M-D3 complete + tested)
+
+```text
+dong_co_du_lieu/xu_ly_lo/          [built]  3 files  ← M-D3 PiT Universe Manager
+│  Module coverage: M-D3 (Point-in-Time Universe Manager — anti-survivorship-bias)
+│  Status: ✅ BUILT + TESTED — 32 unit tests (test/test_d3_pit_universe.py)
+│  Output: ho_du_lieu/lich_su_vu_tru/{date}__{built_at}.parquet + manifest.json
+│  Asset registry: dong_co_du_lieu/xu_ly_lo/asset_registry.db (SQLite WAL)
+├── ★ pit_universe.py               ← Core module (~550 lines)
+│                                     make_asset_id(): UUID v5 per listing event (deterministic)
+│                                     AssetRegistry: SQLite wrapper (6 tables, write-once trigger)
+│                                     PiTUniverseManager: get_universe(), get_universe_history()
+│                                     build_daily_snapshot(): full eligibility formula
+│                                     process_exchange_poll(): listing/delist detection
+│                                     Circuit breaker: >50% missing → exchange DOWN
+│                                     pit_audit(): verify INV-D3.1/D3.2/D3.3/D3.20
+│                                     universe_health_check(): size/ADV/sector spike alerts
+├── symbol_remapper.py              ← Corporate actions (RENAME/FORK) + symbol history
+│                                     apply_rename(): asset_id GIỮNGUYÊN, symbol updated
+│                                     apply_fork(): new asset_id bắt buộc (INV-D3.13)
+│                                     flag_ambiguous_rename() → review queue JSONL
+└── seed_sector_assignments.py      ← One-time seeder: sector_map.yaml → sector_assignments table
+                                      CLI: python -m dong_co_du_lieu.xu_ly_lo.seed_sector_assignments
+```
+
+---
+
+### PHASE 1 ✅ — TIER A DONE (5 files — M-D4 complete)
+
+```text
+dong_co_du_lieu/xu_ly_lo/           [built]  2 files  ← M-D4 batch compute
+│  Status: ✅ BUILT
+├── feature_cache.py                ← FeatureCache orchestrator, atomic Parquet write,
+│                                     cache_hash 12-char (SHA-256 bundle), idempotent skip,
+│                                     BTC-first ordering (INV-D4.28), stale context fix (C4)
+└── pre_aggregate_l2.py             ← L2Snapshot binary encode/decode, OFI formula (Cont 2014)
+                                      compute_book_pressure_5min(): 12 windows/bar (INV-D4.11b)
+                                      store_raw_snapshot(): append binary — KHÔNG BAO GIỜ delete
+                                      aggregate_l2_features(): batch per-day aggregation
+
+nghien_cuu/khung_alpha/             [built]  3 files  ← M-D4 feature spec + registry
+│  Status: ✅ BUILT
+├── __init__.py                     ← package marker
+├── feature_spec.py                 ← FeatureSpec dataclass (frozen, 11 fields)
+│                                     FEATURE_SPECS: 12 features registered
+│                                     FEATURE_SPEC_MAP dict + DAG validation tại import
+└── feature_registry.py             ← FEATURE_REGISTRY: {name → FeatureFn} — 12 functions
+                                      Winsorization [1%,99%] cho return_1h/4h (INV-D4.20)
+                                      Outlier flag 5×IQR cho funding_raw + oi_change (INV-D4.20)
+                                      Welford expanding z-score cho funding_z_30d (INV-D4.19)
+                                      Rolling OLS 504 bars: btc_neutral_1h/4h + BTC 20% check
+                                      Phase 0 L2 features: warm=True immediately, return NaN (INV-D4.27)
+                                      IncrementalFeatureEngine: topo-sort, sync-emit, inject_context
+                                      FeatureSpecRegistry: M-D0 PIT Verifier bridge (lazy import)
+
+Cache output path:
+  ho_du_lieu/kho_dac_trung/offline/{cache_hash_12}/{asset_id}__{start}_{end}.parquet
+  Parquet metadata: schema_version, feature_logic_hash, data_version, compute_ts_utc
 
 hoc_may/huan_luyen/                [new]  5 files  ← M-R1 ML Training Pipeline (CRITICAL GAP)
 │  Module coverage: M-R1
@@ -98,13 +197,17 @@ nghien_cuu/nha_may_alpha/          [existing]  7 files  ← M-R3, M-R4, M-R5, M-
 ├── ★ cost_model.py                 ← M-R7: round_trip_cost_bps(symbol, side, size, regime)
 ├── factor_neutralizer.py           ← M-R8: BTC/ETH/sector neutralization
 ├── alpha_registry.py               ← M-R9: AlphaRecord, stage tracking, similarity search
-└── alpha_cemetery.py               ← M-R9: AlphaAutopsy, kill reason, cemetery lookup
+├── alpha_cemetery.py               ← M-R9: AlphaAutopsy, kill reason, cemetery lookup
+└── lifecycle.py                    ← M-R9: stage gate validation (IDEA→SCREENING→PAPER→SHADOW→LIVE)
 
-nghien_cuu/khung_alpha/            [new]  3 files  ← base contracts cho mọi alpha
+nghien_cuu/khung_alpha/            [new]  4 files  ← base contracts cho mọi alpha
 │  Module coverage: cross-cutting (M-R3 through M-R5 dùng types từ đây)
 ├── base_alpha.py                   ← AlphaHypothesis dataclass, venue_type, family enum
 ├── ★ alpha_contract.py             ← T0Result, T1Result, T2Result, ExperimentRecord types
-└── feature_spec.py                 [new, Phase 1]  ← FeatureSpec dataclass registry (INV-D4.18)
+├── feature_spec.py                 [new, Phase 1]  ← FeatureSpec dataclass registry (INV-D4.18)
+└── feature_registry.py             [new, Phase 1]  ← FEATURE_REGISTRY: {feature_name → FeatureFn}
+                                      Single source of truth cho feature logic (INV-D4.13)
+                                      Imported bởi cả M-D4 batch VÀ live IncrementalFeatureEngine
 
 nghien_cuu/so_tay_jupyter/         [existing]  8 notebooks  ← research exploration
 │  Module coverage: all alpha families (F001–F004, M001–M003, OB001)
@@ -117,8 +220,65 @@ nghien_cuu/so_tay_jupyter/         [existing]  8 notebooks  ← research explora
 ├── M003_momentum_post_funding.ipynb
 └── OB001_ofimicrostructure.ipynb   ← BLOCKED until Family 1/2 fills calibrate M-R7
 
-cau_hinh/research.yaml             1 file
-│  ic_threshold, dsr_threshold, embargo_days, stress_periods, cost_assumptions
+cau_hinh/research.yaml             1 file — SOURCE OF TRUTH cho tất cả thresholds
+│
+│  # Screening thresholds
+│  t0_ic_threshold: 0.025
+│  t0_ic_cost_adj_threshold: 0.015
+│  dsr_threshold: 0.50
+│  embargo_days: 21
+│  max_cost_fraction: 0.40
+│
+│  # Dynamic threshold override (allowed — không vi phạm immutability)
+│  # effective_n > 600 → t0_ic_threshold giảm xuống 0.020 (relaxed mode)
+│  # effective_n < 300 → t0_ic_threshold tăng lên 0.030 (strict mode)
+│  # Dynamic adjustment phải declared trong ExperimentRecord.config_hash
+│
+│  # Stress periods (source of truth — sửa T2.3 text theo đây)
+│  stress_luna_start: "2022-05-07"
+│  stress_luna_end:   "2022-05-14"
+│  stress_ftx_start:  "2022-11-07"
+│  stress_ftx_end:    "2022-11-14"
+│
+│  # Random stress test
+│  random_stress_seed: 42
+│  random_stress_n_periods: 20
+│  random_stress_pass_threshold: 0.70   # ≥ 14/20
+│
+│  # Walk-forward splits (pre-committed trước T1 run)
+│  wf_n_windows: 6
+│  wf_train_test_ratio: 4
+│  # wf_test_dates: [...]  ← pre-define cùng lúc với t1_fold_dates (INV-R5.WF)
+│
+│  # Funding interpolation default
+│  funding_interpolation_method: "null"
+│
+│  # Regime thresholds (pre-committed trước T0 screen bất kỳ hypothesis nào)
+│  adx_trending_threshold: 25
+│  vol_stressed_sigma: 2.0
+│
+│  # M-R11 Market State Engine thresholds (INV-R11.2)
+│  regime:
+│    spread_crisis_percentile: 95
+│    depth_vacuum_ratio: 0.10
+│    ood_score_alert: 2.5
+│    btc_alt_corr_crisis: 0.80
+│    stablecoin_depeg_stress: 0.001
+│    stablecoin_depeg_critical: 0.005
+│    crisis_trigger_btc_return_zscore: 4.0
+│    crisis_trigger_funding_abs_pct: 0.20
+│    crisis_trigger_depth_ratio_min: 0.10
+│    crisis_trigger_mark_index_dev_pct: 1.0
+│
+│  # F002 hedge gap
+│  max_hedge_gap_seconds: 30
+│
+│  # M-R2 override limits
+│  max_overrides_per_year: 2
+│  max_override_per_family: 2
+│
+│  # Null hypothesis validation (one-shot, chạy một lần)
+│  null_hypothesis_seed: 99
 
 cau_hinh/exchange_metadata.yaml   1 file
 │  Per-exchange: funding schedule, maintenance patterns, min_order_size,
@@ -127,9 +287,53 @@ cau_hinh/exchange_metadata.yaml   1 file
 
 scripts/reveal_holdout.py          1 file  ← M-R5: one-time holdout reveal
 scripts/run_alpha_pipeline.py      1 file  ← end-to-end: T0 → T1 → T2 runner
+scripts/shock_simulator.py         1 file  ← M-L1: stress scenario injection (funding spike, liquidity vacuum, cascade)
+
+kich_ban/                          [operational scripts — không phải research modules]
+├── ★ data_collector.py  ✅ BUILT  ← Layer 1 live collection daemon (2026-06-01)
+│                                     BinanceGateway (WS) → BarBuilder (1h) → ParquetFlusher
+│                                     OI poll mỗi 5 phút (REST) | midnight flush | graceful shutdown
+│                                     Output: ho_du_lieu/tho/BINANCE/{SYM}/year={Y}/month={M}/data.parquet
+│                                     Run: python main.py collect  |  python -m kich_ban.data_collector
+├── backfill_history.py  ✅ BUILT  ← REST historical backfill (2026-06-01)
+│                                     Binance /fapi/v1/klines + fundingRate + openInterestHist
+│                                     2 năm lịch sử, is_backfill=True, đồng format M-D1
+│                                     Run: python main.py backfill  |  python -m kich_ban.backfill_history
+├── khoi_dong.py ✅                ← Process manager: Upstream + Signal + Paper/Live subprocesses
+├── khoi_dong_paper.py ✅          ← Shortcut: python main.py paper
+├── khoi_dong_live.py ✅           ← Shortcut: python main.py live
+└── dao_tao_lai_model.py ✅        ← Shortcut: python main.py train
+
+main.py  ✅ BUILT  ← Interactive terminal launcher (Rich + prompt_toolkit) (2026-06-01)
+│                    Commands: collect | backfill | reconcile | paper | live | train | status
+│                    REPL mode (no args) | Direct mode (python main.py collect)
+│                    Auto-detects xterm/Win32 terminal, fallback to basic input
+│                    Run: python main.py
+
+```text
+[REVEAL_HOLDOUT SAFEGUARD PROTOCOL — IRREVERSIBLE OPERATION]
+
+reveal_holdout.py mở holdout period ra cho training. Sau khi chạy, holdout không còn
+là true out-of-sample → không thể undo. Sai ở đây = mất test set vĩnh viễn.
+
+Điều kiện trigger (TẤT CẢ phải đúng):
+  ✓ ≥2 alphas đã PASS T2 với IN-SAMPLE data (chưa dùng holdout)
+  ✓ Research lead ký off bằng văn bản (email hoặc commit message)
+  ✓ n_trials_total đã được reviewed và frozen trước khi reveal
+  ✓ research.yaml đã được committed + tagged (git tag holdout-reveal-YYYY-MM-DD)
+
+Script bắt buộc:
+  1. Đọc research.yaml config, verify hash
+  2. Prompt: "Type YES to reveal holdout. This is IRREVERSIBLE."
+  3. Require human to type experiment_id của alpha được authorized
+  4. Log: {timestamp, operator, n_trials_frozen, git_commit_hash}
+  5. Set holdout_revealed=True trong registry — không reset được bằng code
+
+Rollback: KHÔNG CÓ. Nếu reveal sai thời điểm → phải thu thập data mới cho holdout mới.
+```
 
 nghien_cuu/kham_pha_dac_trung/     [new]  3 files  ← M-R10 anomaly + feature cache
-│  Module coverage: M-R10 (Anomaly Miner — TIER-A Phase 1)
+│  Module coverage: M-R10 (Anomaly Miner — TIER-B | MVA: SKIP — build sau ≥1 live alpha)
 ├── observation_log.py              ← log raw observations (anomalies, regime shifts)
 ├── ★ anomaly_miner.py              ← scan for distribution breaks, IC spikes
 └── feature_cache.py                ← offline feature pre-computation cache manager
@@ -146,7 +350,29 @@ nghien_cuu/danh_gia/               [existing — add 1 file TIER-A, promote from
 
 ---
 
-### PHASE 3 — TIER A (8 files)
+### PHASE 2 — TIER A (6 files)
+
+```text
+nghien_cuu/dong_co_phat_lai/       [existing]  +1 file  ← M-R6 addition
+│  └── vectorized_backtest.py       ← Polars-native vectorized backtest engine
+
+hoc_may/huan_luyen/                [existing — add 1 file]
+│  └── onnx_exporter.py            ← M-R1: export trained model → ONNX
+
+giam_sat/                          [existing — add 3 files]  ← M-L2, M-L3 live monitoring
+├── execution_parity.py             ← M-L2: live slippage vs model (KS test weekly)
+├── reality_gap_monitor.py          ← M-L2: live IC vs backtest IC per alpha
+└── ★ auto_kill.py                  ← M-L3: rolling 30d IC < 25% inception → flag kill
+
+giam_sat/canh_bao/                 [new]  1 file  ← Alert Management (build trước live fills)
+│  Module coverage: Alert Management (Phase 2)
+└── alert_manager.py                ← deduplicate + rate-limit + route alerts (Telegram)
+                                       CRITICAL / ALERT / WARNING severity tiers
+```
+
+---
+
+### PHASE 3 — TIER A (9 files)
 
 ```text
 hoc_may/mo_hinh/                   [existing]  2 files  ← trained model artifacts
@@ -174,27 +400,17 @@ nghien_cuu/nha_may_alpha/
 
 ---
 
-### PHASE 4 — HFT NEW PROJECT (9 files) — rebuild, không phải extension
+### PHASE 4 — HFT NEW PROJECT (4 files) — rebuild từ đầu, không phải extension
 
 ```text
 nghien_cuu/kiem_thu_qua_khu/
-│  mo_phong_su_kien/               [existing]  4 files  ← M-H1 Event-Driven Simulator
+│  mo_phong_su_kien/               [new — HFT project]  4 files  ← M-H1 Event-Driven Simulator
 │  Module coverage: M-H1
+│  [CHỈ BUILD SAU KHI: ≥2 live alphas stable ≥6 tháng, Sharpe > 0.8, capital sẵn]
 │  ├── exchange_simulator.py        ← full order book matching engine simulation
 │  ├── ★ event_simulator.py         ← replay market events tick-by-tick
 │  ├── queue_model.py               ← maker queue position estimation
 │  └── fill_engine.py               ← probabilistic fill based on queue depth
-
-nghien_cuu/dong_co_phat_lai/       [existing]  +1 file  ← M-R6 addition
-│  └── vectorized_backtest.py       ← Polars-native vectorized backtest engine
-
-hoc_may/huan_luyen/
-│  └── onnx_exporter.py            [new]  1 file  ← M-R1: export trained model → ONNX
-
-giam_sat/                          [existing — add 3 files]  ← M-L2, M-L3 live monitoring
-├── execution_parity.py             ← M-L2: live slippage vs model (KS test weekly)
-├── reality_gap_monitor.py          ← M-L2: live IC vs backtest IC per alpha
-└── ★ auto_kill.py                  ← M-L3: rolling 30d IC < 25% inception → flag kill
 ```
 
 ---
@@ -219,23 +435,26 @@ nghien_cuu/danh_gia/               [add to existing]
 ────────────────────────────────────────────────────────────────────────
 TỔNG KẾT
 
-Phase 0 Tier-A:    2 files             (M-D0 Data Lineage — build TRƯỚC Phase 1)
-Phase 1 Tier-A:   43 + 4 = 47 files   (foundation + first alpha research, incl. feature_spec.py)
-Phase 3 Tier-A:    9 files             (portfolio construction, incl. signal_attribution.py)
-Phase 4 HFT:       9 files             (new project — funded by mid-freq profits)
-Tier-B:            3 files             (advanced — sau 2 live alphas)
+Phase 0 Tier-A:    8 files ✅ BUILT   (M-D0 Data Lineage: dataset_record, lineage_registry, verification_registry, exceptions, _locking, pit_verifier, symbol_lifecycle_poller + __init__)
+Phase 1 Tier-A:   52 files            (foundation + first alpha research, incl. maintenance_event_logger, feature_spec.py + feature_registry.py + asset_registry.db + seed_sector_assignments.py + lifecycle.py)
+Phase 2 Tier-A:    6 files            (vectorized backtest, ONNX, live monitoring M-L2/L3, alert_manager)
+Phase 3 Tier-A:    9 files            (portfolio construction, incl. signal_attribution.py)
+Phase 4 HFT:       4 files            (new project — rebuild từ đầu, funded by mid-freq profits)
+Tier-B:            3 files            (advanced — sau 2 live alphas)
 ─────────────────────────────────────────────────────────────────────
-Total Tier-A:     66 files
-Total (A+B):      69 files
+Total Tier-A:     73 files (excl. Phase 4 HFT)
+Total (Tier-A + HFT + Tier-B):  80 files
 
 Folders hiện tại cần ADD files (không tạo mới):
-  dong_co_du_lieu/xu_ly_lo/         → 8 files mới
+  dong_co_du_lieu/xu_ly_lo/         → 11 files mới (incl. maintenance_event_logger.py, asset_registry.db + seed_sector_assignments.py)
   nghien_cuu/danh_gia/              → 7 files + 1 (phase3) + 3 (tier-b)
   nghien_cuu/nha_may_alpha/         → 7 files + 1 (phase3)
   nghien_cuu/so_tay_jupyter/        → 8 notebooks
   hoc_may/to_hop_alpha/             → 4 files
   hoc_may/mo_hinh/                  → 2 files
-  giam_sat/                         → 3 files
+  giam_sat/                         → 3 files (Phase 2)
+  nghien_cuu/dong_co_phat_lai/      → 1 file (Phase 2)
+  hoc_may/huan_luyen/               → 1 file ONNX (Phase 2)
 
 Folders cần TẠO MỚI:
   dong_co_du_lieu/quan_ly_phien_ban/ ← M-D0, build trước mọi thứ khác
@@ -259,6 +478,8 @@ Folders cần TẠO MỚI:
 **R4. Mid-freq code KHÔNG được thiết kế để trở thành HFT code.** HFT là một project riêng, được rebuild từ đầu, funded bởi mid-freq profits. Không optimize latency trong codebase hiện tại. Không extract C/Rust từ Python hiện tại. Viết code sạch vì maintainability, không phải vì "sau này extract được". Xem **HFT Transition Philosophy** bên dưới.
 
 **R5. Live fills là ground truth.** Sau 100 fills đầu tiên, calibrate lại toàn bộ cost model.
+
+**[INV-STRATEGY.1] Mid-freq bar horizon: 30min minimum.** Không build alpha trên bar < 30min trong KAIROS mid-freq codebase. Sub-30min = HFT territory → cần tick data, queue model, co-location (Phase 4 new project). INV-D4.11 đã enforce điều này cho OI data, nhưng invariant này áp dụng cho tất cả signal research.
 
 ---
 
@@ -308,10 +529,15 @@ DỮ LIỆU DUY NHẤT cần preserve cho HFT ngay từ bây giờ:
 ```text
 DATA CORE (Layer 1)
   M-D0: Data Lineage Registry          [BUILD PHASE 0 — song song M-D1]
-  M-D1: Raw Ingestion (WS + REST)      [ĐÃ BUILD]
-  M-D2: Gap Reconciliation             [ĐÃ BUILD ~80%]
-  M-D3: PiT Universe Manager          [BUILD PHASE 0]
-  M-D4: Feature Cache Offline         [BUILD PHASE 1]
+  M-D1: Raw Ingestion (WS + REST)      [ĐÃ BUILD — runner: kich_ban/data_collector.py ✅ 2026-06-01]
+  M-D2: Gap Reconciliation             [ĐÃ BUILD — runner: python main.py reconcile ✅]
+  M-D3: PiT Universe Manager          [ĐÃ BUILD ✅]
+  M-D4: Feature Cache Offline         [ĐÃ BUILD ✅]
+
+  Operational tools (2026-06-01):
+    kich_ban/data_collector.py  — live WS collection daemon (collect 24/7)
+    kich_ban/backfill_history.py — REST historical backfill (2yr OHLCV+Funding+OI)
+    main.py                     — interactive terminal launcher (all scenarios)
 
 RESEARCH CORE (Layer 2)
   M-R1: Model Training Pipeline       [BUILD PHASE 0 — CRITICAL GAP] (Ridge default)
@@ -333,9 +559,9 @@ LIVE CORE (Layer 3)
   M-L4: Portfolio Construction (ERC)  [BUILD PHASE 3]
   M-L5: Risk Gate                     [ĐÃ BUILD ~70%]
 
-HFT PREP (Layer 4 — conditional Phase 4)
-  M-H1: Event-Driven Simulator
-  M-H2: Hot Path Extraction (C/Rust)
+HFT NEW PROJECT (Layer 4 — conditional Phase 4, rebuild từ đầu)
+  M-H1: Event-Driven Tick Simulator
+  M-H2: HFT Execution Engine (C/Rust — new build, không extract từ Python)
 ```
 
 ---
@@ -444,7 +670,7 @@ M-D1 → M-D2 → M-D3 → M-D4
 
 ```text
 WEEK 1–2:
-  [M-D1] đang 90% → complete gap WS reconnect + funding_rate field
+  [M-D1] ✅ DONE — data_collector.py đang chạy live, 335K bars backfilled (2026-06-01)
   [M-D2] đang 80% → complete REST gap fill + data_quality flags
   [M-R7] cost model v1 → maker/taker fee + rough adverse selection (no calibration yet)
   [M-R6] vectorized backtest → Polars, single file, no event-driven
@@ -489,7 +715,7 @@ MODULES CAN DEFER past week 8 (without blocking first alpha):
 
 ## M-D0: Data Lineage & Dataset Version Governance
 
-**Phase:** Build Phase 0 (song song với M-D1) | **TIER-A** | **Status:** Chưa build
+**Phase:** Phase 0 | **TIER-A** | **Status:** ✅ BUILT — 8 files, 25 tests pass (2026-05-30)
 
 ### Purpose
 
@@ -507,18 +733,55 @@ live PnL diverge với backtest; (3) phát hiện retroactive data corruption.
 ```text
 @dataclass(frozen=True)
 class DatasetRecord:
-  dataset_id:       str     — UUID
-  name:             str     — "ohlcv_binance_btcusdt_2024"
-  version:          int     — monotonically increasing
-  created_at:       datetime
-  data_hash_sha256: str     — SHA-256 của raw Parquet bytes (không schema, chỉ data)
-  row_count:        int
-  date_range:       tuple[date, date]
-  exchange:         str
-  symbol:           str | None
-  derivation_type:  str     — "raw" | "gap_filled" | "feature_cache" | "label"
-  derived_from:     tuple[str, ...]  — list[dataset_id] của parent datasets
-  feature_logic_hash: str | None    — hash của feature function source code (nếu derived)
+  schema_version:        int                — = 1; tăng khi thêm field, dùng migrate chain
+  dataset_id:            str                — UUID v4
+  name:                  str                — "ohlcv_binance_btcusdt_2024"
+  version:               int                — monotonically increasing per (name, exchange, symbol)
+                                              tự động allocated bởi write_and_register() → next_version()
+                                              KHÔNG tự set trong record_meta khi gọi write_and_register()
+  created_at:            datetime           — UTC+00:00 (timezone.utc bắt buộc)
+  availability_time:     datetime           — UTC+00:00, khi dataset trở nên "knowable" cho PIT
+                                              Thường = created_at với raw data; = model run time nếu forecast
+  content_hash:          str                — SHA-256 canonical Arrow IPC (column+row sorted + float normalized)
+                                              KHÔNG phải raw Parquet bytes (Parquet encoding non-deterministic)
+  schema_hash:           str                — SHA-256 sorted {column: dtype} JSON — detect schema drift
+  storage_key:           str                — relative path từ LINEAGE_ROOT (e.g. "raw/ohlcv_v3.parquet")
+  natural_key:           tuple[str, ...]    — columns dùng sort rows trước khi hash; REQUIRED non-empty
+  row_count:             int
+  date_range:            tuple[date, date]  — [start_date, end_date] inclusive, UTC day boundary
+  exchange:              str
+  symbol:                str | None
+  derivation_type:       str                — "raw" | "gap_filled" | "feature_cache" | "label"
+  derived_from:          tuple[str, ...]    — dataset_ids của parents (parallel với parent_roles)
+  parent_roles:          tuple[str, ...]    — role names cho parents (e.g. ("spot", "future"))
+                                              inputs = {role: df for role, id in zip(parent_roles, derived_from)}
+  feature_logic_hash:    str | None         — SHA-256 ast.dump() của feature functions (nếu derived)
+                                              Closure factories bị reject (INV-D0.8b — hard enforcement)
+  transform_config_hash: str | None         — SHA-256 config dict (params, windows, thresholds)
+  max_lookback_days:     int                — history tối thiểu để compute feature; 0 cho raw datasets
+
+Không có `pit_verified` trong DatasetRecord — verification status tracked riêng qua VerificationRecord.
+```
+
+### VerificationRecord Schema
+
+```text
+@dataclass(frozen=True)
+class VerificationRecord:
+  schema_version:              int     — = 1
+  record_id:                   str     — UUID v4
+  dataset_id:                  str     — foreign key → DatasetRecord.dataset_id
+  verified_at:                 datetime — UTC+00:00
+  sample_size:                 int
+  mode:                        str     — "dev" (sample≥50) | "production" (sample≥500)
+  passed:                      bool    — False nếu PITViolation hoặc >50% rows InsufficientLookback
+  seed:                        int     — always logged để reproduce khi debug
+  python_version:              str     — e.g. "3.11.4" (AST hash stability audit)
+  verified_feature_logic_hash: str | None
+  violation_details:           str | None
+
+FAILED verifications PHẢI persist — là audit trail, không phải transient events.
+InsufficientLookbackError PHẢI persist — để pipeline không retry liên tục mà không có audit trace.
 ```
 
 ### As-Of Snapshot Policy
@@ -557,21 +820,57 @@ Lineage DAG cho phép:
 ### Invariants
 
 ```text
-[INV-D0.1] dataset_id immutable sau creation — không được delete hoặc modify
-[INV-D0.2] Backtest phải log dataset_id_used — không được dùng "current data"
-[INV-D0.3] Nếu dataset_id_in_backtest ≠ dataset_id_in_live → ALERT (divergence)
-[INV-D0.4] Feature logic hash mismatch → kết quả backtest không compare được
-[INV-D0.5] as_of_snapshot phải tồn tại cho mọi research backtest date range
+[INV-D0.1]  DatasetRecord immutable sau creation — không delete, không modify
+[INV-D0.2]  Backtest PHẢI log dataset_id_used — không dùng "current data"
+[INV-D0.3]  Nếu dataset_id_in_backtest ≠ dataset_id_in_live → ALERT
+[INV-D0.4]  Feature logic hash mismatch → kết quả không compare được
+[INV-D0.5]  as_of() phải tồn tại cho mọi research date range được dùng trong backtest
+[INV-D0.6]  feature_logic_hash trong DatasetRecord PHẢI khớp với FeatureSpec.hash tại thời điểm tạo.
+             Mismatch → raise FeatureHashMismatchError (không warn — fail hard)
+[INV-D0.7]  as_of(query_date) chỉ trả về dataset có availability_time.date() <= query_date
+             Dataset published sau query_date có thể chứa hindsight
+[INV-D0.8]  feature_logic_hash dùng AST hash (ast.dump), không getsource string
+             Known limitation: helper module changes không được capture — target Phase 1
+[INV-D0.8b] Closure factories BỊ CẤM cho feature functions — HARD ENFORCED tại compute_feature_logic_hash()
+             "<locals>" trong fn.__qualname__ → raise ValueError tức thì. Không phải convention — bắt buộc
+[INV-D0.9]  Feature cache KHÔNG được dùng trong production/live trừ khi
+             verification_registry.is_production_verified(dataset_id) == True
+             Cho phép bypass chỉ khi KAIROS_SANDBOX_MODE=1 (env var)
+[INV-D0.10] availability_time monotonicity: derived dataset PHẢI có
+             availability_time >= max(parent.availability_time)
+             register() enforce — raise MonotonicityViolationError nếu vi phạm
+[INV-D0.11] derived_from và parent_roles là parallel ordered tuples (len phải bằng nhau)
+             Đổi thứ tự derived_from mà không đổi parent_roles → silent wrong computation
+[INV-D0.12] derived_from DAG PHẢI acyclic. register() FAIL nếu self-reference
+[INV-D0.13] Tuple (name, exchange, symbol, availability_time, version) PHẢI unique trong registry
+             Enforce tại write time → raise AmbiguousVersionError
+[INV-D0.14] Feature functions PHẢI là module-level def — không phải closure, local fn, hay lambda
+[INV-D0.15] Timestamp columns trong Parquet PHẢI có timezone info (tz-aware, không naive)
+             _canonicalize_floats() raise ValueError nếu phát hiện naive timestamp column
 ```
 
 ### Tests
 
 ```text
-[T-D0.1] Tạo dataset → hash stable (bit-identical sau 2 lần compute)
-[T-D0.2] Thay đổi 1 row → hash mới → new dataset_id created
-[T-D0.3] as_of_feature_snapshot(2024-01-15) → trả về dataset_id từ 2024-01-15
-[T-D0.4] Backtest không specify dataset_id → FAIL với explicit error
-[T-D0.5] Feature logic thay đổi → feature_logic_hash mới → old backtest không invalidated
+[T-D0.1]  Tạo dataset → content_hash stable (bit-identical sau 2 lần compute)
+[T-D0.2]  Thay đổi 1 row → content_hash mới → new dataset_id required
+[T-D0.3]  as_of(query_date=2024-01-15) → đúng dataset_id với availability_time.date() <= query_date
+[T-D0.4]  Backtest không specify dataset_id → raise ValueError tức thì
+[T-D0.5]  Feature logic thay đổi → feature_logic_hash mới → raise FeatureHashMismatchError khi load old dataset
+[T-D0.6]  register() với duplicate dataset_id → raise ImmutabilityError
+[T-D0.7]  Feature cache row dùng data từ tương lai → verify_pit_production() raise PITViolationError
+           → VerificationRecord với passed=False PHẢI tồn tại trong verification_registry
+[T-D0.8]  as_of(query_date=2024-03-01) với dataset availability_time=2024-06-01 → raise AsOfNotFoundError
+[T-D0.9]  Concurrent register() từ 2 process → cả 2 records persisted đúng (file lock)
+[T-D0.10] Schema drift: thêm column → schema_hash mới → new dataset_id required
+[T-D0.11] Thêm comment vào feature function → feature_logic_hash KHÔNG đổi (AST-based)
+[T-D0.14] verify_pit_production(sample_size=100) → raise ValueError (< 500)
+[T-D0.17] InsufficientLookback >50% rows → raise InsufficientLookbackError
+           → VerificationRecord với passed=False PHẢI persist trước khi raise
+[T-D0.18] Monotonicity violation: register feature_cache với availability_time < parent → raise MonotonicityViolationError
+[T-D0.24] -0.0 canonicalization: content_hash của [-0.0, 1.0] == hash của [0.0, 1.0]
+[T-D0.26] Naive timestamp column → _canonicalize_floats raise ValueError chứa "INV-D0.15"
+[T-D0.27] Closure factory → compute_feature_logic_hash raise ValueError chứa "INV-D0.8b"
 ```
 
 ### Depends on
@@ -586,7 +885,7 @@ Tất cả modules trong Research Core (via dataset_id tracking)
 
 ## M-D1: Raw Data Ingestion
 
-**Phase:** Đã build | **TIER-A** | **Status:** 90% complete
+**Phase:** Đã build | **TIER-A** | **Status:** ✅ 100% complete — 10 new modules, 31 tests pass (2026-05-30)
 
 ### Purpose
 
@@ -597,41 +896,64 @@ Thu thập raw market data từ 3 exchanges qua WebSocket + REST. Lưu immutable
 ```text
 INPUT:  Exchange WebSocket streams, REST endpoints
 OUTPUT: ho_du_lieu/tho/{exchange}/{symbol}/year={Y}/month={M}/data.parquet
+        Parquet file metadata: schema_version=SCHEMA_VERSION
 
 Schema (mandatory fields):
-  event_time_ns:  int64   — exchange timestamp, nanoseconds
-  recv_time_ns:   int64   — local receive timestamp
-  open, high, low, close: float64
-  volume:         float64 — quote volume (USDT)
-  trades:         int32   — trade count per bar
-  funding_rate:   float64 — null if not settlement bar
-  oi_usdt:        float64 — open interest in USDT
+  event_time_ns:               int64   — bar open time, nanoseconds UTC
+  recv_time_ns:                int64   — local receive timestamp, nanoseconds UTC
+                                         Null nếu is_backfill=True
+  open, high, low, close:      float64
+  volume:                      float64 — QUOTE volume (USDT). Binance: field "q" KHÔNG phải "v"
+  taker_buy_volume:            float64 — taker buy QUOTE volume. Binance: "Q"; Bybit/OKX: null
+  trades:                      int32   — trade count per bar
+  is_settlement_bar:           bool    — True nếu bar chứa funding settlement timestamp
+  funding_rate:                float64 — SETTLED rate; null nếu is_settlement_bar=False HOẶC collection fail
+                                         KHÔNG forward-fill. KHÔNG dùng predicted/announced rate.
+  oi_usdt:                     float64 — OI snapshot TRƯỚC bar close (reject nếu snapshot >= bar_close)
+  oi_observed_before_close_ms: int32   — khoảng cách snapshot→bar_close, ms. Luôn > 0; null nếu oi_usdt null
+  dq_flags:                    int32   — OHLCV sanity bitmask (0=clean)
+                                         bit 0: OHLC_INVERSION | bit 1: NEGATIVE_VOLUME
+                                         bit 2: TAKER_EXCEEDS_TOTAL | bit 3: EXTREME_FUNDING_RATE
+                                         Bar vẫn write khi dq_flags != 0 — downstream lọc theo policy
+  is_backfill:                 bool    — True nếu bar ingest qua REST (không phải live WS)
 ```
 
 ### Invariants
 
 ```text
-[INV-D1.1] event_time_ns strictly monotonic per (exchange, symbol)
-[INV-D1.2] No forward-fill on raw OHLCV — missing bars = null
-[INV-D1.3] recv_time_ns >= event_time_ns (cannot receive before event)
-[INV-D1.4] Parquet files immutable after write (append-only via new partition)
-[INV-D1.5] funding_rate non-null only at settlement bars (00:00, 08:00, 16:00 UTC for Binance)
-[INV-D1.6] Bar boundary assignment rule (explicit — không để implicit):
-             bar_start_ns <= event_time_ns < bar_end_ns   ← left-inclusive, right-exclusive
-             Ví dụ: bar "01:00 UTC" chứa events [01:00:00.000, 01:59:59.999]
-             Event tại exactly 02:00:00.000 thuộc bar "02:00", không phải "01:00"
-             Áp dụng cho: OHLCV aggregation, funding alignment, feature timestamp join
-             Test: funding message arrives 00:00:00.003 UTC → thuộc bar 00:00, không 23:00
+[INV-D1.1]  event_time_ns strictly monotonic per (exchange, symbol)
+[INV-D1.2]  No forward-fill OHLCV — missing bars = null row (không bỏ qua)
+[INV-D1.3]  LOG WARNING (không assert/drop) nếu recv_time_ns < event_time_ns:
+              "clock_skew: event_time ahead of recv by Xms, exchange={}, symbol={}"
+             Local clock có thể chạy chậm hơn exchange clock (NTP drift).
+             Hard assert sẽ drop legitimate messages.
+[INV-D1.4]  Parquet files immutable sau write (append-only via new partition)
+[INV-D1.5]  is_settlement_bar dựa trên settlement_minutes[exchange][symbol] (set of minutes in day).
+             FETCH từ exchange metadata lúc startup — KHÔNG hardcode {0, 8, 16}.
+             Lưu dạng MINUTES (không hours): interval_minutes=30 → range(0, 1440, 30)
+             Dùng hours: 30//60 = 0 → range(0, 24, 0) = ValueError.
+[INV-D1.6]  Bar boundary: bar_open_ns <= event_time_ns < bar_open_ns + granularity_ns
+[INV-D1.7]  Zombie connection detection per-exchange (KHÔNG dùng 3× bar granularity):
+              ZOMBIE_TIMEOUT = {"binance": 600, "bybit": 120, "okx": 120}  # seconds
+[INV-D1.8]  Dedup key: (exchange, symbol, event_time_ns) unique trong Parquet tháng
+[INV-D1.9]  Settlement bars KHÔNG write ngay khi bar đóng — chờ funding confirmed (T+5min max)
+[INV-D1.10] settlement_buffer PHẢI persistent (file-backed spool). Mất buffer khi restart → funding null vĩnh viễn
+[INV-D1.11] oi_observed_before_close_ms luôn > 0. Reject condition: >= bar_close_ms (không phải >)
+[INV-D1.12] Chỉ process CLOSED bars. Binance "x"=True; Bybit "confirm"=True; OKX candle[8]=="1" (string)
+[INV-D1.13] OHLCV sanity validation → dq_flags bitmask. Bar vẫn write khi flagged + DLQ copy + alert
 ```
 
 ### Parameters
 
 ```text
-[PUBLISHED] Binance funding settlement: 00:00, 08:00, 16:00 UTC
-[PUBLISHED] Bybit funding settlement: 00:00, 08:00, 16:00 UTC
-[PUBLISHED] OKX funding settlement: 00:00, 08:00, 16:00 UTC
-[ESTIMATED] Max acceptable clock drift: 500ms
-[ASSUMED]   WS reconnect backoff: exponential 1s → 60s
+[FETCHED]   Funding interval per instrument (minutes) — từ exchange metadata lúc startup
+            Cache TTL: 86400s/major, 3600s/altcoin; startup fallback: 480 phút + retry 60s
+[ESTIMATED] Max clock drift: 500ms (cloud NTP < 1ms; local có thể cao hơn)
+[ASSUMED]   WS reconnect backoff: exponential 1s → 60s với jitter ±50%
+[PUBLISHED] ZOMBIE_TIMEOUT: {"binance": 600, "bybit": 120, "okx": 120} (seconds)
+[PUBLISHED] SETTLEMENT_TIMEOUT_S = 300 (T+5min sau bar close)
+[PUBLISHED] Subscribe rate limit: {"binance": 250ms, "bybit": 100ms, "okx": 100ms}
+            Binance: max 4 subscribe/s → 250ms minimum. 100ms = disconnect + IP ban.
 ```
 
 ### Failure Modes
@@ -649,11 +971,23 @@ Schema (mandatory fields):
 ### Tests
 
 ```text
-[T-D1.1] 48h continuous run, 0 silent gaps (gaps phải được logged)
-[T-D1.2] funding_rate null ở non-settlement bars
-[T-D1.3] recv_time_ns - event_time_ns < 2000ms (99th percentile)
-[T-D1.4] Không có duplicate (exchange, symbol, event_time_ns)
-[T-D1.5] Sau WS reconnect, data tiếp tục không bị duplicate
+[T-D1.1]  Mock WS server: inject 10 disconnect events → 10 gap records, 0 silent
+[T-D1.2]  Settlement schedule theo minutes (không hours):
+           Instrument 480min: {0, 480, 960} → is_settlement_bar=True chỉ tại đúng minutes đó
+[T-D1.3]  Settlement bar buffer: bar 00:00 đóng → NOT written; funding 00:02 → written với rate
+           Funding > 5min → written với funding_rate=NULL + ALERT logged
+[T-D1.4]  Settlement buffer persistence: bar vào buffer → kill process → restart → restore từ spool
+[T-D1.6]  Latency: recv_time_ns - event_time_ns: p99 < 500ms, p99.9 < 2000ms
+[T-D1.7]  Không có duplicate (exchange, symbol, event_time_ns) kể cả sau reconnect
+[T-D1.8]  Binance volume: inject {v:100, q:50000, Q:30000} → volume=50000, taker_buy_volume=30000
+[T-D1.9]  OKX timestamp string: inject ts="1704067200000" → event_time_ns = 1704067200000000000
+[T-D1.11] Zombie: ZOMBIE_TIMEOUT["bybit"]=120s elapsed → reconnect, reason_code="zombie", gap logged
+[T-D1.15] OI future leak: oi_snapshot_ms = bar_close_ms → oi_usdt=None, ALERT "OI_FUTURE_LEAK"
+           oi_snapshot_ms = bar_close_ms - 1 → accepted, oi_observed_before_close_ms=1
+[T-D1.20] Confirm flag: Bybit confirm=False → process() returns early, bar NOT written
+           OKX candle[8]="0" (string) → dropped. candle[8]="1" (string) → processed
+[T-D1.21] dq_flags: low=50000, open=48000 (low > open) → bit 0 set; flagged bar vẫn write
+[T-D1.24] Spool int64 precision: bar_ns = 1_704_067_200_123_456_789 → read back exact (string serialization)
 ```
 
 ### Provides to
@@ -676,72 +1010,110 @@ Phát hiện và đánh dấu gaps trong data stream. Dùng REST để fill gaps
 
 ```text
 INPUT:  ho_du_lieu/tho/ (raw Parquet từ M-D1)
-        REST API endpoints (3 exchanges)
+        REST API endpoints (Binance, Bybit, OKX)
+        cau_hinh/funding_schedule/{exchange}_{symbol}.json  — phải refresh trước 01:30 UTC
+        ho_du_lieu/he_thong/maintenance_log.parquet         — từ maintenance_event_logger.py daemon
+        ho_du_lieu/he_thong/daemon_heartbeat.json           — liveness check của daemon
+        dong_co_du_lieu/meta/symbol_lifecycle_raw.parquet   — từ M-D0 symbol_lifecycle_poller
+        cau_hinh/maintenance_override.yaml                  — manual override cho daemon miss
 
 OUTPUT: ho_du_lieu/da_xu_ly/{exchange}/{symbol}/year={Y}/month={M}/data.parquet
+        ho_du_lieu/gap_manifest/{date}/{exchange}_{symbol}.json  — audit artifact
+        ho_du_lieu/bao_cao_phu_song/{date}.json                 — coverage report (daily, kể cả 0 gaps)
 
 Thêm fields:
-  is_gap_filled:  bool    — bar được fill từ REST (không phải WS)
-  gap_duration_s: float32 — null nếu không phải gap boundary
-  data_quality:   int8    — 0=perfect, 1=rest_filled, 2=suspect, 3=missing
+  is_gap_filled:          bool    — bar được fill từ REST (không phải WS)
+  gap_duration_s:         float32 — null nếu không phải gap boundary
+  data_quality:           int8    — 0=perfect, 1=rest_filled, 2=suspect, 3=missing, 4=scheduled_maintenance
+  funding_rate_raw:       float64 — raw rate per settlement period (decimal); null nếu unavailable
+  funding_interval_min:   int16   — settlement interval theo PHÚT (đọc từ exchange API, không hard-code)
+                                    dùng phút để support sub-1h interval (30min → 30, không 0)
+  funding_rate_annual:    float64 — [DERIVED] = funding_rate_raw × (525600 / funding_interval_min)
+                                    M-R7 nên recompute từ raw + interval; field này có thể stale
+  funding_rate_source:    str     — "exchange_native" | "coinglass_fallback" | null
+  funding_rate_stale:     bool    — True nếu bar inherit rate từ previous settlement
+  funding_published_ns:   int64   — khi exchange publish rate này (anti-lookahead); null nếu unavailable
 ```
 
 ### Logic
 
 ```text
-Nightly reconciliation (sau 02:00 UTC):
-  1. Scan symbol/date → tìm missing bars (expected vs actual count)
-  2. Nếu gap ≤ 3 bars và REST available → fill từ REST, mark is_gap_filled=True
-  3. Nếu gap > 3 bars → mark data_quality=3, KHÔNG fill
-  4. Nếu REST data inconsistent với WS boundary → mark data_quality=2
+TARGET WINDOW: reconcile yesterday = (run_date − 1 day). Không reconcile current day.
+PRE-CHECK: Verify funding_schedule cache đã refresh (mtime > today 01:30 UTC).
 
-Exchange clock audit (daily):
-  - Compute mean(recv_time_ns - event_time_ns) per exchange per hour
-  - Alert nếu drift > 500ms systematically
-  - Log drift series (cần cho PiT alignment downstream)
+0. Check daemon_heartbeat.json: stale > 15min → alert + maintenance_confidence=UNKNOWN
+1. Load symbol_lifecycle_raw.parquet → compute expected_bar_set (ACTIVE state only)
+2. Join maintenance_log.parquet + maintenance_override.yaml → maintenance windows
+   confidence: HIGH (daemon_poll) | LOW (manual_override) | UNKNOWN (daemon stale)
+3. Scan → tìm missing/suspect bars (zombie volume: MAD robust_zscore, two-tail)
+4. Produce gap manifest TRƯỚC fill phase (detection fields IMMUTABLE sau khi written)
+5. Classify và xử lý gaps:
+   - Trong maintenance window (HIGH/MEDIUM) → data_quality=4, KHÔNG fill
+   - Gap > max_gap_duration_s → data_quality=3, KHÔNG fill
+   - Gap ≤ max_gap_duration_s: fill từ REST + INTRA-GAP CONTINUITY + BOUNDARY (SYMMETRIC)
+     Continuity fail → data_quality=3 | Boundary fail → data_quality=2
+6. Merge funding rates (anti-lookahead: funding_published_ns ≤ bar.close_time_ns)
+7. Atomic write: write-to-temp → rename (POSIX rename() — not S3/NFS)
 ```
 
 ### Invariants
 
 ```text
-[INV-D2.1] is_gap_filled=True iff data đến từ REST, không phải WS
-[INV-D2.2] Không có bars với data_quality=3 được dùng trong IC calculation
-[INV-D2.3] Bars REST-filled không được dùng cho short-horizon features (≤5min)
-[INV-D2.4] Gap report được tạo mỗi ngày, chứa: symbol, gap_start, gap_end, fill_status
+[INV-D2.1]  is_gap_filled=True iff data đến từ REST, không phải WS
+[INV-D2.2]  Bars data_quality ∈ {3, 4} KHÔNG được dùng trong IC calculation
+[INV-D2.3]  Bars REST-filled (data_quality=1) KHÔNG dùng cho short-horizon features (≤5min)
+[INV-D2.4]  Gap manifest: detection fields IMMUTABLE sau khi written; fill_outcome là field DUY NHẤT mutable
+[INV-D2.5]  Semantic idempotency: chạy lại cùng input → content hash giống nhau
+             (ngoại trừ recv_time_ns của gap-filled bars = gap_start_ns deterministic)
+[INV-D2.7]  funding_rate_raw non-null ONLY tại settlement bars; bars giữa settlements: stale=True
+[INV-D2.8]  ANTI-LOOKAHEAD: tại bar close_time=T, chỉ dùng funding_published_ns ≤ T
+             KHÔNG dùng settlement_time làm proxy
+[INV-D2.9]  expected_bar_set = symbol_lifecycle_raw ∩ maintenance_exclusion (ACTIVE state only)
+[INV-D2.11] REST fill phải pass INTRA-GAP CONTINUITY (monotonic, no duplicate, contiguous, count match)
+[INV-D2.13] MAD=0 trong zombie detection → skip zombie check + log WARNING (không crash)
 ```
 
 ### Parameters
 
 ```text
-[ESTIMATED] max_fillable_gap_bars: 3    — hơn 3 bars REST data không tin cậy
-[ESTIMATED] min_daily_coverage: 95%     — dưới này flag symbol
-[ESTIMATED] max_clock_drift_ms: 500     — hơn này alert
-[ASSUMED]   REST rate limit buffer: 20% — không dùng hết rate limit
+[ESTIMATED] bar_interval_s:              3600     — 1h bars (đồng bộ với M-D1)
+[ESTIMATED] max_gap_duration_s:          10800    — = 3 × bar_interval_s; PHẢI review nếu bar_interval_s đổi
+[ESTIMATED] min_daily_coverage:          95%      — dưới này flag symbol
+[ESTIMATED] zombie_volume_lower_threshold: -3.0   — MAD robust_zscore thấp hơn → suspect low volume
+[ESTIMATED] zombie_volume_upper_threshold:  5.0   — MAD robust_zscore cao hơn → suspect volume spike
+[ESTIMATED] zombie_volume_window_days:    30      — rolling window
+[ESTIMATED] min_zombie_window_days:        7      — < 7 days → cold start → skip zombie check
+[ASSUMED]   REST_retry_max:               3       — exponential backoff 1±0.3s, 2±0.6s, 4±1.2s
+                                                    HTTP 418/429: Retry-After header → wait; nếu không có → 60s
 ```
-
-### Failure Modes
-
-- REST rate limit bị hit → gap fill timeout, gap không được đánh dấu
-- Exchange maintenance gap > 3 bars → mark missing, downstream phải loại
-- REST trả data khác WS (exchange bug) → data_quality=2 catch được
 
 ### Tests
 
 ```text
-[T-D2.1] Inject synthetic 1-bar gap → is_gap_filled=True sau reconciliation
-[T-D2.2] Inject 5-bar gap → data_quality=3, không filled
-[T-D2.3] Bars data_quality=3 không xuất hiện trong feature computation
-[T-D2.4] Gap report generated daily at 02:30 UTC
-[T-D2.5] Alert gửi khi coverage < 95% cho bất kỳ symbol nào
+[T-D2.1]  Inject synthetic 1-bar gap → is_gap_filled=True sau reconciliation
+[T-D2.2]  Inject gap > max_gap_duration_s → data_quality=3, không filled
+[T-D2.3]  Gap trong scheduled maintenance (confidence=HIGH) → data_quality=4
+[T-D2.4]  Gap report generated daily tại 02:30 UTC kể cả khi không có gaps
+[T-D2.5]  Alert khi coverage < 95%
+[T-D2.6]  ANTI-LOOKAHEAD: settlement 08:00, published_ns=08:00:03
+           Bar [07:00-08:00) close=08:00:00 → dùng 00:00 rate (published > close ✓)
+           Bar [08:00-09:00) close=09:00:00 → dùng 08:00 rate (published ≤ close ✓)
+[T-D2.7]  Semantic idempotency: chạy lại → content hash giống nhau
+[T-D2.8]  Zombie lower tail (robust_zscore < threshold) → data_quality=2, reason="zombie_volume_low"
+[T-D2.21] REST non-contiguous bars → intra-gap continuity fail → data_quality=3
+[T-D2.22] daemon_heartbeat stale > 15min → maintenance confidence=UNKNOWN → quality=3 thay vì 4
+[T-D2.23] Hour-of-day group MAD=0 → zombie check skip → data_quality=0 + log WARNING "mad_zero_skip"
+[T-D2.29] Zombie upper tail → data_quality=2, reason="zombie_volume_high"
+[T-D2.32] HTTP 418 từ Binance REST → backoff 60s, alert, không retry ngay
 ```
 
 ### Depends on
 
-M-D1 (raw Parquet)
+M-D0 (symbol_lifecycle_raw.parquet từ symbol_lifecycle_poller), M-D1 (raw Parquet)
 
 ### Provides to
 
-M-D3 (universe manager), M-D4 (feature cache), M-R2 (leakage audit)
+M-D3 (universe manager), M-D4 (feature cache), M-R2 (leakage audit), M-R7 (funding cost per bar)
 
 ---
 
@@ -755,307 +1127,484 @@ Quản lý lịch sử universe theo Point-in-Time. Đảm bảo research không
 
 **Đây là anti-survivorship-bias module quan trọng nhất.**
 
+### Phase Scope
+
+```text
+PHASE 0 — Build NOW: PiT snapshots (known_at semantics), UUID v5 asset identity,
+  lifecycle 3 states (ACTIVE/SUSPECTED_DELIST/DELISTED), ADV + OI + coverage gates,
+  stablecoin exclusion, basic sector lookup (static PiT-aware), RENAME + FORK corporate
+  actions, SQLite registry (WAL mode), immutable snapshots + manifest.json.
+
+PHASE 1 — Sau first alpha proven: full sector versioning, SUSPENDED lifecycle state,
+  MIGRATION/REBASE/REDENOMINATION corporate actions, funding anomaly filter,
+  manifest.json → SQLite, SQLite → DuckDB nếu concurrent queries needed.
+
+PHASE 2 — Sau fund-level AUM (>$50M): DuckDB/Parquet lakehouse, advanced liquidity
+  filters (effective spread, VPIN), full event sourcing, distributed rebuild.
+```
+
 ### Input / Output
 
 ```text
-INPUT:  ho_du_lieu/da_xu_ly/ (cleaned data)
-        Exchange listing/delisting event logs
+INPUT:  ho_du_lieu/da_xu_ly/ (cleaned data, data_quality flags)
+        Exchange listing/delisting event logs (poll mỗi 4 giờ)
 
-OUTPUT: ho_du_lieu/lich_su_vu_tru/{snapshot_date}.parquet
+OUTPUT: ho_du_lieu/lich_su_vu_tru/{snapshot_date}__{snapshot_built_at}.parquet
+        Latest pointer: {snapshot_date}.parquet (atomic copy via os.replace() — KHÔNG symlink)
+          Lý do: Windows yêu cầu admin/Developer Mode cho os.symlink() → dùng os.replace() thay thế
+          Pattern: write temp file → os.replace(temp, "{snapshot_date}.parquet")
+        manifest.json — {snapshot_date: [list of built versions]} (append-only)
 
 Schema:
-  asset_id:         str       — UUID v4, immutable per listing event (KHÔNG phải symbol string)
-  symbol:           str       — display ticker (có thể reuse: LUNA → LUNC → LUNA2)
-  listing_date:     date
-  delisting_date:   date | null
-  adv_usdt_30d:     float64   — ADV tính đến ngày snapshot_date - 1 (lagged, không dùng same-day)
-  in_universe:      bool      — True nếu đủ điều kiện tại snapshot_date
-  exclusion_reason: str | null
+  asset_id:                 str       — UUID v5, deterministic per listing event
+  symbol:                   str       — PiT ticker tại snapshot_date (không phải current)
+  exchange:                 str       — "binance" | "bybit" | "okx"
+  instrument_type:          str       — "PERP" (USDT-margined only Phase 0) | "SPOT"
+  exchange_internal_id:     str       — raw exchange contract ID (e.g. "SOLUSDT" trên /fapi)
+  first_tradable_timestamp: int64     — UTC nanoseconds, WRITE-ONCE immutable sau lần đầu gán
+  listing_date:             date      — derived: date(first_tradable_timestamp, tz=UTC)
+  lifecycle_state:          str       — "ACTIVE" | "SUSPECTED_DELIST" | "DELISTED"
+  delist_source:            str|null  — "OFFICIAL_ANNOUNCEMENT"|"API_DISAPPEARANCE"|"MANUAL_OVERRIDE"
+  delisting_timestamp:      int64|null  — UTC ns của last_observed_kline (bar cuối có data)
+  delisting_date:           date|null
+  last_available_price:     float64|null  — close price của candle cuối (null nếu trading halt)
+  trading_halted:           bool      — True nếu exchange halt trước khi có final price
+  adv_usdt_30d:             float64   — ADV quote volume, lagged 1 ngày
+  avg_oi_usdt_30d:          float64|null  — Average OI in USDT, lagged 1 ngày (PERP only)
+  oi_volume_ratio:          float64|null  — avg_oi/adv (PERP only)
+  coverage_ratio:           float64   — fraction valid bars trong ADV window [0.0, 1.0]
+  avg_funding_rate_8h_30d:  float64|null  — mean abs funding rate/8h, lagged 30d (PERP only)
+                                            Crude funding dysfunction filter: > 1.0% → exclusion
+  sector:                   str       — sector tại snapshot_date (PiT lookup)
+  in_universe:              bool
+  in_entry_universe:        bool      — subset của in_universe: requires lifecycle_state == "ACTIVE"
+  exclusion_reason:         str|null
+  source:                   str       — "LIVE_DETECTED" | "SEEDED" | "ANNOUNCEMENT_DERIVED"
+  known_at:                 int64     — UTC nanoseconds, khi KAIROS đầu tiên detect listing
+  snapshot_built_at:        int64     — UTC nanoseconds, khi snapshot được generate
+  eligibility_version:      str       — hash của parameter set dùng để tính in_universe
+                                        (cho reproducibility khi thay đổi thresholds)
 ```
+
+**[REMOVED vs spec cũ]** `final_return` — thuộc portfolio/P&L layer. Universe chỉ lưu
+`last_available_price` + `trading_halted` flag để portfolio layer tự tính P&L theo risk policy.
 
 **[CRITICAL] Ticker Collision — Crypto Survivorship Bias Ẩn:**
 
 ```text
-Vấn đề: Crypto exchanges tái sử dụng ticker symbols.
-Ví dụ lịch sử:
-  LUNA (cũ, sụp đổ 2022-05-13) → LUNC
-  LUNA (mới, ra đời 2022-05-28) → LUNA
-  BTT (cũ) → BTTC
-  FTT (FTX token, delist 2022-11-08) → nhiều exchanges delist, sau list lại
+Vấn đề: exchanges tái sử dụng ticker symbols (LUNA → LUNC → LUNA2).
+Nếu join theo string symbol → nối nhầm price series → look-ahead bias.
 
-Nếu map theo string symbol, backtest sẽ:
-  - Nối nhầm price series của coin cũ và coin mới
-  - Tạo jump giá khổng lồ hoặc look-ahead bias tại thời điểm đổi tên
+Giải pháp: asset_id = UUID v5 gắn với LISTING EVENT, không phải symbol string.
+  KAIROS_NS = uuid.UUID("d4a7c8f0-9b3e-5a21-8f6d-3e14c2b7a905")
+  key = f"{exchange}:{instrument_type}:{exchange_internal_id}:{first_tradable_timestamp_ns:020d}"
+  asset_id = str(uuid5(KAIROS_NS, key))
 
-Giải pháp: asset_id = UUID v4 gắn với từng LISTING EVENT, không phải symbol string.
-  Khi exchange list một coin mới (kể cả cùng ticker) → new asset_id.
-  symbol_remapper.py (M-D1) phải map exchange_internal_id → asset_id.
-  Tất cả joins downstream (features, signals, returns) phải dùng asset_id.
+  Lý do dùng timestamp_ns (không listing_date): re-derive date có thể shift 1 ngày → UUID vỡ.
+  first_tradable_timestamp là WRITE-ONCE trong asset_registry.db (SQLite trigger enforce).
+  Mọi joins downstream PHẢI dùng asset_id, không symbol.
+```
+
+### Temporal Semantics — CRITICAL
+
+```text
+valid_time   = khi event thực sự xảy ra phía exchange
+known_at     = khi KAIROS biết về event (sau polling cycle)
+tradable_at  = khi có thể thực sự trade (first tradable candle, volume > threshold)
+
+Core PiT rule: get_universe(date) chỉ dùng thông tin có known_at < 00:00:00 UTC của date đó.
+KHÔNG dùng valid_time — phải dùng known_at. Vi phạm dù 1 giây = lookahead bias.
+```
+
+### Lifecycle State Machine (Phase 0)
+
+```text
+ACTIVE           → in_universe=True, in_entry_universe=True
+SUSPECTED_DELIST → in_universe=True(*), in_entry_universe=False  (1 poll miss)
+DELISTED         → in_universe=False, in_entry_universe=False     (≥3 polls miss)
+
+(*) chỉ khi liquidity gates vẫn pass
+Transitions: ACTIVE → SUSPECTED_DELIST → DELISTED (hoặc ACTIVE nếu false alarm)
+
+in_entry_universe = True CHỈ KHI lifecycle_state == "ACTIVE" AND in_universe == True.
+Signal layer PHẢI check in_entry_universe trước khi generate new entry signals.
 ```
 
 ### Invariants
 
 ```text
-[INV-D3.1] get_universe(date) chỉ dùng thông tin có trước date đó
-[INV-D3.2] Symbol chỉ vào universe sau min_listing_days kể từ listing_date
-[INV-D3.3] Delisted symbols KHÔNG bị xóa khỏi historical universe
-            → delisting_date được set, in_universe=False sau đó
-[INV-D3.4] Delisting return: nếu không có exit price → mark return = -100%
-            (không drop row, không NaN, không 0)
-[INV-D3.5] ADV = mean(daily_volume, window=[t-31, t-1]) — lagged 1 ngày.
-            KHÔNG dùng volume của ngày t để xác định eligibility tại t.
-[INV-D3.6] asset_id KHÔNG bao giờ thay đổi sau khi gán.
-            Nếu exchange đổi tên contract → symbol field update, asset_id giữ nguyên.
-[INV-D3.7] Mọi join downstream (M-D4, M-R3, M-R6) phải join ON asset_id,
-            không join ON symbol (symbol có thể trùng giữa 2 listing events).
-[INV-D3.8] Sau đổi tên ticker: cả old_symbol VÀ new_symbol phải được track
-            trong symbol_history field, không chỉ current symbol.
+[INV-D3.1]  get_universe(date) chỉ dùng known_at < 00:00:00 UTC của date đó.
+             KHÔNG dùng valid_time — phải dùng known_at.
+[INV-D3.2]  Symbol vào universe SAU min_listing_days kể từ listing_date.
+[INV-D3.3]  Delisted symbols KHÔNG bị xóa khỏi registry.
+[INV-D3.4]  Delisting với trading halt → last_available_price = null, trading_halted = True.
+             Portfolio layer xử lý final P&L (worst-case). Universe KHÔNG lưu final_return.
+[INV-D3.5]  ADV = mean(daily_quote_volume_adj, window=[t-30, t-1]) — lagged 1 ngày, 30 ngày.
+             Coverage denominator = min(days_since_listing, adv_lookback_days) cho new listings.
+[INV-D3.6]  asset_id KHÔNG thay đổi sau khi gán.
+             RENAME → symbol field update, asset_id giữ nguyên.
+[INV-D3.7]  Mọi join downstream PHẢI join ON asset_id, không ON symbol.
+[INV-D3.8]  Sau đổi tên: cả old_symbol VÀ new_symbol track trong asset_symbols table.
+[INV-D3.9]  Tất cả timestamps lưu ở UTC nanoseconds (int64). Không timezone-naive.
+[INV-D3.10] Historical snapshots immutable sau khi tạo. Rebuild → file mới, file cũ giữ nguyên.
+[INV-D3.11] Rebuild từ DB phải cho ra identical universe membership.
+             Deterministic: same DB state → same asset_ids (UUID v5 + write-once timestamp).
+[INV-D3.12] ADV lookback window phải có coverage_ratio >= min_coverage_ratio.
+             Nếu không → in_universe=False, exclusion_reason="low_coverage".
+[INV-D3.13] FORK → new asset_id bắt buộc. RENAME → giữ nguyên asset_id.
+[INV-D3.14] Stablecoins bị exclude khỏi universe (cau_hinh/stablecoin_exclusion.yaml).
+[INV-D3.15] Universe membership changes effective tại snapshot ngày TIẾP THEO.
+             Không retroactively change snapshot đã tạo.
+[INV-D3.16] Exchange metadata revisions KHÔNG được mutate historical snapshots retroactively.
+[INV-D3.17] Sector lookup phải dùng sector assignment có hiệu lực TẠI date đó (PiT).
+             Phase 0: asset chưa listed tại date → sector="Other".
+[INV-D3.18] OI filter áp dụng CHỈ cho instrument_type = "PERP".
+[INV-D3.19] lifecycle_state transitions theo Phase 0 state machine.
+             Không direct ACTIVE→DELISTED mà không qua SUSPECTED_DELIST (trừ MANUAL_OVERRIDE).
+[INV-D3.20] in_entry_universe = True CHỈ KHI lifecycle_state == "ACTIVE" VÀ in_universe == True.
+[INV-D3.21] snapshot_built_at của các versions cho cùng snapshot_date phải monotonically tăng.
+             manifest.json append-only: version mới luôn append vào cuối.
+[INV-D3.22] Exchange downtime circuit breaker:
+             >50% universe missing trong 1 poll → exchange_health="DOWN" → KHÔNG transition SUSPECTED_DELIST
+             Alert human-in-the-loop. Resume chỉ khi exchange_health="OK" trở lại.
+[INV-D3.23] Crude funding dysfunction filter (PERP only, Phase 0):
+             avg_funding_rate_8h_30d > 1.0% → exclusion_reason="funding_dysfunction", in_universe=False
+[INV-D3.24] delisting_timestamp = last_observed_kline_timestamp (bar cuối có data trong M-D1)
+             Nếu không có kline sau miss event → = first_miss_wall_clock từ poll_tracking (conservative)
 ```
 
 ### Parameters
 
 ```text
-[ESTIMATED] min_listing_days: 90        — tránh listing pump bias
-[ESTIMATED] min_adv_usdt: 5_000_000    — $5M daily volume tối thiểu
-[ASSUMED]   adv_lookback_days: 30       — rolling window tính ADV (lagged)
-[ASSUMED]   sector_map: L1, L2, DeFi, Meme, RWA, AI (manual, update quarterly)
+[ESTIMATED] min_listing_days:           90
+[ESTIMATED] min_adv_usdt:               5_000_000   — $5M ADV minimum (scale theo AUM)
+[ESTIMATED] min_oi_usdt:                20_000_000  — $20M OI minimum (PERP only)
+[ESTIMATED] min_oi_volume_ratio:        0.15        — OI/ADV ratio (wash trading filter)
+[ASSUMED]   adv_lookback_days:          30
+[ASSUMED]   min_coverage_ratio:         0.90        — 90% valid bars trong ADV window
+[ASSUMED]   min_volume_per_bar_usdt:    10_000      — threshold first_tradable_timestamp
+[ASSUMED]   delisting_confirm_polls:    3           — polls missing trước khi confirm
+[ASSUMED]   delisting_confirm_hours:   12          — wall-clock minimum (cả poll count VÀ wall-clock phải pass)
+[ASSUMED]   poll_interval_hours:        4
+[ASSUMED]   exchange_outage_threshold: 0.50        — fraction universe missing → circuit breaker trigger
+[ASSUMED]   funding_dysfunction_crude: 0.010       — 1.0% avg abs funding/8h over 30d (Phase 0 crude)
+[ASSUMED]   sector_map: L1, L2, DeFi, Meme, RWA, AI (versioned YAML, update quarterly)
 ```
 
 ### Logic: Delisting Handling
 
 ```text
-Khi symbol bị delist:
-  1. Ngày cuối cùng có data → set final_return = (last_price - entry_price) / entry_price
-  2. Nếu không có last_price (exchange halt) → final_return = -1.0 (-100%)
-  3. delisting_date = ngày cuối có data
-  4. in_universe = False cho mọi snapshot sau delisting_date
-  5. Không xóa rows → historical research vẫn include symbol này
+Khi symbol bị confirm delist (lifecycle_state → DELISTED):
+  1. delisting_timestamp = UTC nanoseconds của candle cuối cùng có trade
+  2. delist_source = "API_DISAPPEARANCE" | "OFFICIAL_ANNOUNCEMENT" | "MANUAL_OVERRIDE"
+  3. Nếu trading halt: last_available_price = null, trading_halted = True
+     Nếu có final candle: last_available_price = close price
+  4. in_universe = False, in_entry_universe = False sau delisting_date
+  5. Không xóa rows — historical research vẫn include symbol này
+  6. Portfolio layer xử lý final P&L (worst-case assumption nếu trading_halted=True)
+
+SUSPECTED_DELIST period (12h cửa sổ xác nhận):
+  in_entry_universe = False — không enter position mới
+  in_universe = True (nếu ADV/OI vẫn pass) — có thể hold existing position
 ```
 
 ### Tests
 
 ```text
-[T-D3.1] Luna UST (2022-05-09): in_universe=False sau 2022-05-13, final_return=-1.0
-[T-D3.2] get_universe(2023-01-01) không include symbols listed sau 2023-01-01
-[T-D3.3] Symbol mới listed → chỉ in_universe sau min_listing_days
-[T-D3.4] Historical universe count: 2022 có khác 2024 (không static)
-[T-D3.5] Pit audit: không có symbol trong universe trước listing_date của nó
+[T-D3.1]  Luna UST (2022-05-09): in_universe=False sau 2022-05-13,
+           last_available_price=null, trading_halted=True, lifecycle_state="DELISTED"
+[T-D3.2]  get_universe(2023-01-01) không include symbols listed sau 2023-01-01 UTC midnight
+[T-D3.3]  Symbol mới listed → chỉ in_universe sau min_listing_days
+[T-D3.4]  Historical universe count: 2022 có khác 2024 (không static)
+[T-D3.5]  PiT audit: không có symbol trong universe trước known_at của nó
+[T-D3.6]  Ticker collision: LUNA_old vs LUNA_new → 2 asset_ids khác nhau (UUID v5)
+[T-D3.7]  Sector PiT: asset chưa listed tại date → sector="Other"
+[T-D3.8]  Delisting confirmation: poll 1 miss → SUSPECTED_DELIST, in_entry_universe=False;
+           poll 3 miss → DELISTED; reappear sau poll 1 → ACTIVE (false alarm)
+[T-D3.9]  UUID v5 determinism: build registry hai lần từ cùng input → identical asset_ids
+[T-D3.10] Coverage ratio gate: coverage_ratio=0.75 → in_universe=False, "low_coverage"
+[T-D3.11] OI filter (PERP only): avg_oi=$3M < $20M → in_universe=False;
+           SPOT symbol không bị ảnh hưởng (INV-D3.18)
+[T-D3.12] RENAME vs FORK: LUNA→LUNC cùng asset_id; LUNA2 (Terra 2.0) asset_id mới
+[T-D3.13] Concurrency: 2 poller detect cùng listing → UNIQUE constraint đảm bảo 1 INSERT
+[T-D3.14] Snapshot immutability: fix bug → build v2 → v1 vẫn nguyên, manifest có cả 2
+[T-D3.15] UUID write-once trigger: UPDATE first_tradable_timestamp → ABORT
+[T-D3.16] in_entry_universe gating: SUSPECTED_DELIST → False; recover → True
 ```
 
 ### Depends on
 
-M-D2 (cleaned data)
+M-D1 (raw data: volume, OI fields), M-D2 (cleaned data, data_quality flags)
 
 ### Provides to
 
-M-R2 (leakage audit), M-R6 (vectorized backtest), M-R7 (cost model)
+M-R2 (leakage audit), M-R4 (factor model — sector assignments via get_sector()),
+M-R6 (vectorized backtest), M-R7 (cost model)
 
 ---
 
 ## M-D4: Feature Cache (Offline)
 
-**Phase:** Build Phase 1 | **TIER-A** | **Status:** Chưa build | **MVA:** DEFER — load raw features trực tiếp cho first alpha, optimize sau
+**Phase:** Build Phase 1 | **Tier:** A | **Status:** Chưa build
+**MVA:** DEFER — load raw features trực tiếp cho first alpha, optimize sau
 
 ### Purpose
 
-Pre-compute và cache feature matrices cho research. Tránh recompute 50 lần cho 50 hypotheses. Cache invalidated by feature hash khi logic thay đổi.
+Pre-compute và cache feature matrices cho research. Tránh recompute 50 lần cho 50 hypotheses.
+Cache invalidated by feature hash khi logic thay đổi.
 
 ### Input / Output
 
 ```text
 INPUT:  ho_du_lieu/da_xu_ly/ (cleaned OHLCV, funding, OI)
-        Feature definitions (function + params)
+        Feature definitions từ FEATURE_REGISTRY trong feature_registry.py
 
-OUTPUT: ho_du_lieu/kho_dac_trung/offline/{feature_set_hash}/
-          {symbol}_{start}_{end}.parquet
+OUTPUT: ho_du_lieu/kho_dac_trung/offline/{cache_hash_12chr}/{symbol}_{start}_{end}.parquet
 
 Schema (mỗi row = 1 bar):
-  timestamp:                  datetime[ns, UTC]
-  symbol:                     str
-  funding_rate_8h:            float64   — raw funding, settlement-aligned
-  funding_rate_zscore_30d:    float64   — expanding window z-score
-  oi_change_pct_1h:           float64   — % OI change vs 1h ago
-  oi_change_pct_4h:           float64
-  perp_spot_basis_bps:        float64   — (perp - spot) / spot × 10000
-  return_1h:                  float64   — raw 1h return
-  return_4h:                  float64
-  return_1h_btc_neutral:      float64   — residual sau rolling OLS vs BTC
-  return_4h_btc_neutral:      float64
-  volume_ratio_24h:           float64   — symbol vol / mean(universe vol)
-  book_pressure_5min:         float64   — OFI aggregated 5-min
-  spread_bps:                 float64   — bid-ask spread in bps
-```
+  timestamp:                datetime[ns, UTC]
+  symbol:                   str
+  funding_rate_8h:          float64   — raw funding, non-null chỉ tại settlement bars
+  funding_rate_zscore_30d:  float64   — expanding z-score trên settlement bars, carry-forward
+  oi_change_pct_1h:         float64
+  oi_change_pct_4h:         float64
+  perp_spot_basis_bps:      float64
+  return_1h:                float64
+  return_4h:                float64   — close[T]/close[T-4 bars]-1 (4 consecutive 1h bars, không resample)
+  return_1h_btc_neutral:    float64   — residual sau rolling OLS 21 ngày vs BTC
+  return_4h_btc_neutral:    float64
+  volume_ratio_24h:         float64
+  book_pressure_5min:       float64   — mean OFI của 12 windows 5-min trong (T-1h, T]
+  spread_bps:               float64   — time-weighted average bid-ask spread trong (T-1h, T]
 
-### Invariants
-
-```text
-[INV-D4.1] Tất cả z-score dùng expanding window (PiT-safe), không full-sample
-[INV-D4.2] funding_rate chỉ non-null tại settlement bars
-[INV-D4.3] btc_neutral features dùng rolling OLS 21-day (không full-sample beta)
-[INV-D4.4] Cache hash = hash(feature_function_source + params + data_version)
-[INV-D4.5] Khi feature logic thay đổi → hash mới → recompute tự động
-[INV-D4.6] Bars với data_quality=3 → features = NaN (không compute)
-[INV-D4.7] Expanding z-score trả về NaN cho tất cả bars trong min_periods đầu tiên.
-            Không interpolate, không forward-fill, không dùng rolling mean thay thế.
-[INV-D4.8] Mọi join với universe history phải dùng asset_id (không symbol string).
-
-[INV-D4.9] OI data source PHẢI declared trong feature lineage (M-D0 DatasetRecord):
-            oi_source field bắt buộc có giá trị: "binance_native" | "bybit_native" | "coinglass_agg".
-            Feature lineage thiếu oi_source → DatasetRecord rejected.
-[INV-D4.10] Live và backtest PHẢI dùng cùng OI source:
-             Binance native API ≠ Coinglass aggregated (Coinglass có delay và normalization khác).
-             Dùng nhầm source → systematic feature drift từ ngày 1 (OI level khác ~5–15%).
-             Verify bởi M-L2 daily parity check.
-[INV-D4.11] Coinglass aggregated OI KHÔNG được dùng cho features với horizon < 30 phút:
-             Coinglass có aggregate delay 15–20 phút vs exchange native endpoint.
-             Dùng exchange native OI (REST) cho bất kỳ feature sub-30min nào.
-[INV-D4.12] Funding interpolation method PHẢI declared trong feature lineage:
-             Funding rate chỉ settled mỗi 8 giờ — giữa settlements, funding_rate = null.
-             Nếu feature cần funding_rate tại non-settlement bars → declare method:
-               "carry_forward": forward-fill settlement rate đến settlement tiếp theo (PiT-safe)
-               "null": chỉ dùng settlement bars (restrict signal đến bars funding_rate non-null)
-               "linear": KHÔNG khuyến nghị — interpolate tuyến tính predict future settlement
-             Default nếu không declare: "carry_forward".
-             Live và backtest phải dùng cùng method (verified bởi M-L2).
-[INV-D4.13] Feature parity — live compute PHẢI import từ cùng module với batch:
-             KHÔNG rewrite feature logic trong live pipeline (copy-paste = silent divergence).
-             Enforce: single function definition trong feature_registry.py,
-             imported bởi cả M-D4 batch pipeline VÀ live IncrementalFeatureEngine.
-             Test T-D4.6 (feature parity 1e-6) là test contract của invariant này.
-[INV-D4.14] Cold start signal = NaN (không phải 0):
-             Symbol vừa pass min_listing_days nhưng chưa có đủ feature history (< min_periods bars).
-             feature = NaN → signal = NaN → position = 0.
-             NaN KHÔNG được convert thành 0 tại signal layer hoặc feature layer.
-             Convert NaN → 0 chỉ tại position sizing layer (sau khi signal đã validated).
-             Lý do: signal = 0 trên NaN feature vẫn generate exit trade từ non-existent position
-             → systematic noise + cost trong early bars của newly-listed symbols.
-```
-
-### Schema Evolution Strategy
-
-```text
-[PROBLEM] Thêm column mới vào Parquet schema sau khi data đã được viết:
-  - Old Parquet files thiếu column mới
-  - Code assume column exists → silent NaN hoặc KeyError → pipeline fail không rõ lý do
-  - Xảy ra khi: thêm feature mới, thêm field audit, schema cleanup
-
-[SOLUTION — Versioned Schema Policy]:
-
-Schema version field: mọi Parquet dataset trong ho_du_lieu/ phải có:
-  schema_version: int8    — monotonically increasing, default 1
-
-schema_validator.py tracks:
-  SCHEMA_REGISTRY = {
-    "da_xu_ly":   {1: [...baseline_columns...], 2: [...+borrow_rate...]},
-    "kho_dac_trung": {1: [...], 2: [...+book_pressure_5min...]},
-  }
-
-Khi thêm column mới (schema upgrade):
-  1. Tăng version: SCHEMA_VERSION = 2 trong schema_validator.py
-  2. Old files (v1): read_with_default(new_col, default=NaN) — không fail
-  3. New files: write với version=2, new_col populated
-  4. Migration flag: mark dataset_id mới trong M-D0 (derived_from = old dataset_id)
-     KHÔNG rewrite old Parquet files — immutability rule (INV-D1.4)
-
-Backward compatibility rule:
-  - v1 files đọc bởi v2 code → missing columns = NaN (không crash)
-  - v2 files đọc bởi v1 code → extra columns ignored (Parquet đảm bảo)
-  - Code phải dùng .get(col, default=NaN) hoặc try/except KeyError khi read optional columns
-  - Columns bắt buộc (required): crash nếu thiếu → detect ngay, không silent fail
-
-Schema diff logging (trong schema_validator.py):
-  Sau mỗi write session, log: {dataset, schema_version, added_cols, removed_cols}
-  Alert nếu: schema thay đổi mà KHÔNG có version bump
-    → Có thể là exchange API thay đổi field name (Gap Failure Mode M-D1)
-
-[INV-D4.15] Mọi Parquet file trong ho_du_lieu/ phải có schema_version field
-[INV-D4.16] Code không được hardcode column index — dùng column name access
-[INV-D4.17] Required columns: crash fast nếu thiếu; Optional columns: NaN nếu thiếu
-[INV-D4.18] Mọi feature trong M-D4 cache phải có FeatureSpec entry trước khi được dùng trong T0/T1/T2.
+Parquet file-level metadata (KHÔNG phải column — dùng custom_metadata khi write):
+  schema_version:       str   — e.g. "v3"
+  feature_logic_hash:   str   — SHA-256(AST của toàn bộ file feature_registry.py)
+  data_version:         str   — dataset_id từ M-D0
+  compute_ts_utc:       str   — ISO-8601 timestamp lúc compute
 ```
 
 ### FeatureSpec Contract
 
 ```python
+# File: nghien_cuu/khung_alpha/feature_spec.py
 @dataclass(frozen=True)
 class FeatureSpec:
-    name: str                    # "funding_z_30d"
-    inputs: list[str]            # ["funding_rate"]
-    frequency: str               # "1h" | "4h"
-    min_history_bars: int        # minimum bars trước khi output valid
-    pit_safe: bool               # True = expanding window, False = cần review
-    live_ready: bool             # True = có thể dùng trong live engine
-    normalization: str           # "expanding_z" | "carry_forward" | "none"
-    description: str             # ngắn gọn
+    name:                   str
+    inputs:                 tuple[str, ...]    # PHẢI là tuple (list không hashable với frozen=True)
+    frequency:              str                # "1h" | "4h"
+    min_history_bars:       int                # minimum GOOD bars trước khi output valid
+    pit_safe:               bool               # True = expanding window, không full-sample
+    live_ready:             bool               # True = có live compute path trong FEATURE_REGISTRY
+    normalization:          str                # "expanding_z" | "carry_forward" | "none"
+    category:               str                # "carry" | "momentum" | "microstructure" | ...
+    orthogonal_group:       str | None         # HINT cho researcher — cùng group likely correlated
+    decay_half_life_bars:   int | None         # expected IC half-life; None = chưa biết
+    expected_horizon:       str                # "1h" | "4h" | "8h"
+    description:            str
 ```
 
 ```text
-File: nghien_cuu/khung_alpha/feature_spec.py   [new, Phase 1]
-      Cùng folder với alpha_contract.py.
-      Mọi feature được dùng trong T0/T1/T2 phải có FeatureSpec entry đăng ký tại đây.
-      pit_safe=True → verified expanding window, không full-sample normalization.
-      live_ready=True → đã có live compute path trong IncrementalFeatureEngine (INV-D4.13).
+Mọi feature PHẢI có FeatureSpec entry VÀ FEATURE_REGISTRY entry trước khi dùng trong T0/T1/T2.
 ```
 
-### Expanding Window Normalization + Burn-in Period
+### Feature Registry
+
+```python
+# File: nghien_cuu/khung_alpha/feature_registry.py
+# Single source of truth cho tất cả feature logic.
+# Cả M-D4 batch VÀ live IncrementalFeatureEngine đều import từ đây (INV-D4.13).
+# Signature: (bar: dict, state: dict) -> float | None
+
+FEATURE_REGISTRY: dict[str, FeatureFn] = {
+    "return_1h":                 compute_return_1h,
+    "return_4h":                 compute_return_4h,
+    "funding_rate_8h":           extract_funding_rate,
+    "funding_rate_zscore_30d":   compute_funding_z_30d,   # Welford trên settlement bars
+    "oi_change_pct_1h":          compute_oi_change_1h,
+    "oi_change_pct_4h":          compute_oi_change_4h,
+    "volume_ratio_24h":          compute_volume_ratio,
+    "perp_spot_basis_bps":       compute_basis_bps,
+    "return_1h_btc_neutral":     compute_btc_neutral_1h,  # phụ thuộc return_1h BTC
+    "return_4h_btc_neutral":     compute_btc_neutral_4h,
+    "spread_bps":                compute_spread_bps,
+    "book_pressure_5min":        compute_book_pressure,   # cần L2 data
+}
+# KHÔNG import FEATURE_REGISTRY từ bất kỳ live_feature_computer.py nào.
+# Module này là single source — cả batch M-D4 VÀ live engine đều import từ đây.
+```
+
+### Invariants
 
 ```text
-ĐÚNG (PiT-safe):
-  z = (x - expanding_mean) / expanding_std
-  min_periods = 252 bars (1h bars) hoặc 63 bars (4h bars)  ← cứng, không tunable
-  Output = NaN cho tất cả bars t < min_periods
+[INV-D4.1]  Tất cả z-score dùng expanding window (PiT-safe), không full-sample.
+             Z-score features dùng Welford's online algorithm (numerical stability + batch/live parity).
+[INV-D4.2]  funding_rate_8h chỉ non-null tại settlement bars (00:00, 08:00, 16:00 UTC).
+[INV-D4.3]  btc_neutral features dùng rolling OLS 21 NGÀY:
+               1h frequency: 504 bars (21×24) | 4h frequency: 126 bars (21×6)
+             OLS là rolling (không expanding, không full-sample beta).
+             Nếu BTC data_quality < 80% trong window → beta unreliable → feature = NaN.
+[INV-D4.3b] Rolling OLS ring buffer: cố định 504/126 entries, FIFO eviction.
+             Beta = Cov(R_sym, R_btc) / Var(R_btc) trên toàn bộ entries.
+             Batch và live PHẢI dùng cùng eviction order → bit-identical beta.
+             KHÔNG dùng RLS (output khác rolling OLS, parity fail).
+[INV-D4.4]  Cache hash (2 hashes riêng biệt):
+               feature_logic_hash = SHA-256(ast.dump(ast.parse(feature_registry.py)))
+               cache_hash (12 chars) = SHA-256(feature_logic_hash + params_repr + data_version)[:12]
+             Bundle approach: hash toàn bộ file feature_registry.py → any helper change → invalidate all.
+             Lý do AST: whitespace/comment không đổi hash, chỉ nhạy logic.
+[INV-D4.5]  Khi feature logic thay đổi → hash mới → cache miss → recompute tự động.
+[INV-D4.6]  Bars với data_quality ∈ {3, 4} → features = NaN.
+             bar_count KHÔNG tăng cho data_quality ∈ {3, 4}.
+             Filter TRƯỚC khi feed vào Welford/ring buffer — không pass bad rows rồi mới skip.
+[INV-D4.7]  NaN warm-up: NaN cho mọi bar trước khi đạt spec.min_history_bars GOOD observations.
+             Default min_history_bars: 252 (1h) / 63 (4h) cho expanding_z.
+             funding_zscore_30d cần 90 settlement observations.
+             Không interpolate, không forward-fill, không dùng rolling mean thay thế NaN warm-up.
+[INV-D4.8]  Mọi join phải dùng asset_id (không symbol string).
+[INV-D4.9]  OI source PHẢI declared: "binance_native" | "bybit_native" | "coinglass_agg".
+[INV-D4.9b] Order book source PHẢI declared: "native_l2" | "none".
+             Phase 0 (chưa có L2) → ob_source="none" → book_pressure_5min=NaN toàn bộ.
+             KHÔNG dùng volume proxy (quá noisy, không reproducible khi upgrade).
+[INV-D4.10] Live và backtest PHẢI dùng cùng OI source (M-L2 verify daily).
+[INV-D4.11] Coinglass aggregated OI KHÔNG dùng cho features horizon < 30min (delay 15–20 phút).
+[INV-D4.11b] book_pressure_5min aggregation (PiT-safe):
+             OFI_5min[w] = Σ OFI_normalized[t] trong window w (sum — cumulative flow).
+             book_pressure_5min[T] = mean(OFI_5min[w]) trên 12 windows trong (T-1h, T].
+             Nếu < 6 windows có đủ L2 data → NaN.
+[INV-D4.12] Funding interpolation PHẢI declared: "carry_forward" | "null" (default) | KHÔNG "linear".
+             "null" → funding_rate_8h column. Khác với funding_rate_zscore_30d (carry-forward output).
+[INV-D4.13] Feature parity — live PHẢI import từ FEATURE_REGISTRY trong feature_registry.py.
+             Single function definition; cả batch M-D4 VÀ live IncrementalFeatureEngine import từ đây.
+[INV-D4.13b] FeatureFn warm flag: mọi FeatureFn PHẢI set state["warm"]=True khi đủ history.
+             Engine emit NaN cho TẤT CẢ features nếu bất kỳ feature nào chưa warm (sync emit).
+[INV-D4.14] Cold start = NaN (không phải 0). Convert NaN → 0 CHỈ tại position sizing layer.
+[INV-D4.15] schema_version là Parquet file-level metadata (custom_metadata), KHÔNG phải column.
+[INV-D4.16] Code không được hardcode column index — dùng column name.
+[INV-D4.17] Required columns: crash fast nếu thiếu; Optional columns: NaN nếu thiếu.
+[INV-D4.18] Mọi feature PHẢI có FeatureSpec entry VÀ FEATURE_REGISTRY entry trước khi dùng trong T0/T1/T2.
+[INV-D4.19] funding_rate_zscore_30d trên sparse series:
+             1. Extract settlement bars only.
+             2. Expanding z-score bằng Welford — min_history=90 settlements (~30 ngày).
+             3. Carry-forward z-score output sang tất cả 1h bars giữa settlements.
+             4. std=0 → trả về 0 (zero signal, không NaN, không inf).
+[INV-D4.20] Winsorization (rolling 90 ngày — bounded memory, exact quantile, batch/live parity):
+             return_1h, return_4h: [1%, 99%] per-symbol rolling 90d.
+             funding_rate_8h: [0.1%, 99.9%] rolling 90d trên settlement bars only.
+             oi_change_pct_*: flag NaN nếu |value| > 5×IQR rolling 90d.
+             Winsorize TRƯỚC khi z-score. Bounds tính từ [T-90d, T) — không future data.
+[INV-D4.21] Provenance metadata: mỗi Parquet file PHẢI có custom_metadata đủ 4 fields.
+[INV-D4.22] BTC quality propagation: BTC data_quality=3 tại bar T →
+             return_*_btc_neutral = NaN cho TẤT CẢ symbols tại bar T.
+             BTC missing > 20% trong rolling OLS window → beta unreliable → btc_neutral=NaN.
+[INV-D4.23] Atomic write: write {path}.tmp → os.replace({path}.tmp, {path}).
+             Idempotent: feature_logic_hash match → skip (safe parallel per-symbol).
+[INV-D4.24] Feature dependency graph PHẢI là DAG. Validation fail-fast tại import time:
+             cycle → RuntimeError; missing dep → RuntimeError; duplicate name → RuntimeError.
+[INV-D4.25] Timestamps PHẢI strictly monotonic per symbol (guarantee từ M-D2).
+             M-D4 KHÔNG re-validate — nếu M-D2 vi phạm → rolling state bị corrupt silently.
+[INV-D4.26] Determinism: float64 ONLY, fixed iteration order, KHÔNG parallel reduction.
+             Set OMP_NUM_THREADS=1, MKL_NUM_THREADS=1 trong feature compute process.
+```
 
-SAI (look-ahead leak):
-  z = (x - x.mean()) / x.std()  ← NEVER dùng trong research
+### Schema Evolution Strategy
 
-SAI (noise signal):
-  min_periods quá nhỏ (< 21) → variance rất cao tại early bars
-  → IC artificially inflated trên "warm-up" period khi sample nhỏ
+```text
+Khi thêm column mới: tăng SCHEMA_VERSION, old files read_with_default(NaN), new dataset_id trong M-D0.
+KHÔNG rewrite old Parquet files (INV-D1.4 immutability).
 
-[CRITICAL — Burn-in Invariant]:
-  Nghiên cứu IC chỉ được tính từ bar min_periods trở đi (sau khi expanding window
-  có đủ sample). Nếu universe của một symbol không có đủ min_periods history
-  trong training window → exclude symbol đó khỏi IC calculation, không impute.
+Khi thêm feature mới: thêm FeatureSpec + FEATURE_REGISTRY entry → hash mới → cache miss → recompute.
+Old cache files (thiếu feature mới) → read_with_default(new_feature, NaN).
+
+schema_validator.py tracks SCHEMA_REGISTRY per dataset type. Alert nếu schema thay đổi
+mà KHÔNG có version bump (có thể là exchange API thay đổi field name).
+```
+
+### NaN Handling Policy (cross-module)
+
+```text
+SOURCE OF TRUTH: cau_hinh/nan_handling_policy.yaml
+  labels:     "never_ffill"
+  features:   "drop_rows"
+  signals:    "fillna_with_zero"
+  cold_start: "nan_not_zero"
+
+Ngoại lệ: funding_rate_zscore_30d OUTPUT carry-forward (INV-D4.19).
+KHÔNG vi phạm policy vì carry-forward áp dụng cho z-score kết quả, không raw data.
+All modules PHẢI load policy từ file này — không hardcode convention cục bộ.
 ```
 
 ### T0 On-the-fly Feature Compute (Subset Mode)
 
 ```text
-Mục đích: cho phép T0 screen feature mới TRƯỚC KHI commit vào M-D4 batch cache.
+Khi feature mới chưa có trong cache → T0 compute on-the-fly:
+  symbols: top-10 liquid THEO M-D3 PiT universe tại start-of-evaluation-period.
+           KHÔNG dùng current liquid — survivorship bias.
+  period:  last 6 months
 
-Khi nào dùng subset mode:
-  - Feature mới chưa có trong M-D4 cache (idea vừa nghĩ ra)
-  - Chỉ cần pass/kill decision nhanh (≤15 phút SLA)
+Rule:
+  T0 PASS subset → commit vào M-D4 batch → T1/T2 trên full sample
+  T0 KILL subset → kill, không tốn compute
+  IC từ subset mode KHÔNG được dùng trong T1/T2
+```
 
-Subset mode config:
-  symbols:     top-10 liquid (BTC, ETH, BNB, SOL, AVAX, ARB, OP, MATIC, ATOM, LINK)
-  period:      last 6 months (không phải full 2 năm)
-  compute:     on-the-fly từ ho_du_lieu/da_xu_ly/ (không cần M-D4)
+### IncrementalFeatureEngine (Live Path)
 
-Quy tắc:
-  Nếu T0 PASS với subset mode → commit feature vào M-D4 batch → chạy T1/T2 trên full sample
-  Nếu T0 KILL với subset mode → kill ngay, không tốn M-D4 compute
-  IC từ subset mode không được dùng trong T1/T2 (khác sample)
+```python
+# Đây là interface live engine PHẢI implement.
+# CÙNG logic với batch — import từ FEATURE_REGISTRY (không rewrite).
+
+class IncrementalFeatureEngine:
+    def __init__(self, feature_specs: list[FeatureSpec]):
+        self.warm_up_bars = max(s.min_history_bars for s in feature_specs)
+        self.state = {s.name: {} for s in feature_specs}  # mỗi fn tự init lazily
+
+    def update(self, bar: dict) -> dict[str, float | None]:
+        """
+        Nhận bar mới, update state, return features.
+        Trả về NaN nếu bar["data_quality"] ∈ {3, 4} (bar_count KHÔNG tăng).
+        Trả về NaN cho TẤT CẢ features nếu bất kỳ feature nào chưa warm (sync emit).
+        """
+        if bar["data_quality"] in (3, 4):
+            return {s.name: float("nan") for s in self.feature_specs}
+        results = {s.name: FEATURE_REGISTRY[s.name](bar, self.state[s.name])
+                   for s in self.feature_specs}
+        if not all(self.state[s.name].get("warm", False) for s in self.feature_specs):
+            return {s.name: float("nan") for s in self.feature_specs}
+        return results
 ```
 
 ### Tests
 
 ```text
-[T-D4.1] Recompute với same data → bit-identical output (deterministic)
-[T-D4.2] funding_rate_zscore tại bar T chỉ dùng data ≤ T
-[T-D4.3] btc_neutral_return tại bar T chỉ dùng BTC returns ≤ T
-[T-D4.4] Thay đổi feature_function → hash mới, recompute triggered
-[T-D4.5] Bars data_quality=3 → tất cả features = NaN
-[T-D4.6] Feature parity: batch compute == live compute (tolerance 1e-6)
+[T-D4.1]  Recompute với same data → bit-identical output (deterministic)
+[T-D4.2]  funding_rate_zscore tại bar T chỉ dùng data ≤ T
+[T-D4.3]  btc_neutral_return tại bar T chỉ dùng BTC returns ≤ T
+[T-D4.4]  Thay đổi feature_function → hash mới, recompute triggered
+[T-D4.5]  Bars data_quality ∈ {3, 4} → tất cả features = NaN; bar_count KHÔNG tăng
+[T-D4.6a] Z-score parity (Welford): batch == live tolerance 1e-6 trên ≥5,000 bars
+[T-D4.6b] Rolling OLS parity (ring buffer): batch == live beta tolerance 1e-6 trên 5,000 bars;
+           verify FIFO eviction order khớp
+[T-D4.6c] Winsorization parity: batch rolling-90d bounds == live, tolerance 1e-6
+[T-D4.7]  funding_rate_zscore_30d: NaN trước 90 settlement observations; carry-forward đúng;
+           std=0 → 0, không inf
+[T-D4.8]  Concurrent write: N workers × cùng hash, different symbols → no corruption; idempotent
+[T-D4.9]  BTC data_quality=3 tại bar T → btc_neutral = NaN cho ALL symbols tại T
+[T-D4.10] Winsorization PiT-safe: bounds tại bar T chỉ dùng data trong [T-90d, T)
+[T-D4.11] Batch data_quality ∈ {3, 4} không advance Welford/ring buffer state
+[T-D4.12] Sync-emit: insert bad-quality settlement bars → funding_z delayed → engine NaN toàn bộ
+[T-D4.13] AST hash invariance: same logic + different whitespace → same hash; logic change → different
+[T-D4.14] Bundle hash: helper change trong feature_registry.py → invalidate ALL features
+[T-D4.15] DAG validation: cycle → RuntimeError at import; missing dep → RuntimeError
 ```
 
 ### Depends on
 
-M-D2 (cleaned data), M-D3 (universe — để biết symbols valid)
+M-D2 (cleaned data), M-D3 (universe)
 
 ### Provides to
 
-M-R3 (T0 screen), M-R4 (T1 validate), M-R5 (T2 diligence), M-R6 (backtest)
+M-R3 (T0), M-R4 (T1), M-R5 (T2), M-R6 (backtest)
 
 ---
 
@@ -1081,11 +1630,16 @@ Pipeline hoàn chỉnh từ raw features → trained model → versioned artifac
 
 ```text
 hoc_may/huan_luyen/
-  labeler.py        — tạo forward return labels
-  purged_cv.py      — PurgedKFold cross-validation
-  dsr.py            — Deflated Sharpe Ratio
-  trainer.py        — model training (Ridge first)
-  model_registry.py — versioned model storage
+  labeler.py           — tạo forward return labels
+  trainer.py           — model training (Ridge first)
+  onnx_exporter.py     — export trained model → ONNX (Phase 1)
+
+nghien_cuu/danh_gia/
+  purged_kfold.py      — PurgedKFold cross-validation
+  dsr_calculator.py    — Deflated Sharpe Ratio
+
+hoc_may/mo_hinh/
+  model_registry.py    — versioned model storage (xem Phase 3 file structure)
 ```
 
 ### Sub-module: Labeler
@@ -1251,7 +1805,7 @@ Cross-validate IC (không MSE):
 ### Sub-module: Model Registry
 
 ```text
-hoc_may/huan_luyen/model_registry.py
+hoc_may/mo_hinh/model_registry.py
 
 save_model(model, feature_list, cv_metrics, experiment_id) → model_id
   model_id format: {date}_{experiment_hash[:6]}_ic{mean_cv_ic:.3f}
@@ -1282,6 +1836,47 @@ Hypothesis không được thay đổi sau khi thấy kết quả.
 Trainer.fit() bị BLOCK nếu ExperimentRecord thiếu config_hash hoặc n_trials_total.
 ```
 
+### Sub-module: Reproducibility Lock
+
+```text
+hoc_may/huan_luyen/reproducibility.py
+
+Purpose: pin mọi nguồn randomness trước khi train.
+Input:  ExperimentRecord (dataset_id, seed)
+Output: ReproducibilityRecord — snapshot của env state
+
+Key operations:
+  lock_dataset(dataset_id)    → verify SHA-256 khớp DatasetRecord trong M-D0
+  lock_seed(seed: int)        → set numpy/torch/random seeds; log vào ExperimentRecord
+  snapshot_env()              → ghi {python_version, library_versions, hostname, timestamp}
+
+Invariants:
+  [INV-REPRO.1] dataset SHA-256 phải khớp M-D0 DatasetRecord trước khi fit()
+  [INV-REPRO.2] Trainer.fit() bị block nếu lock_dataset() chưa được gọi
+  [INV-REPRO.3] Seed phải là integer (không phải None hoặc "random")
+```
+
+### Sub-module: Dataset Splitter
+
+```text
+hoc_may/huan_luyen/dataset_splitter.py
+
+Purpose: tạo PiT-safe train/val split — không có future leak qua boundary.
+Input:  DataFrame (bar × feature), label_series, val_start_date
+Output: (train_df, val_df) với purge + embargo applied
+
+Key operations:
+  temporal_split(df, val_start)        → train=[start, val_start-embargo], val=[val_start, end]
+  purge_labels(train_df, val_start)    → drop train rows có label overlapping val period
+  embargo(train_df, val_start, days)   → drop train rows trong embargo_days trước val_start
+
+Invariants:
+  [INV-SPLIT.1] Không có bar trong val_df tồn tại trong train_df
+  [INV-SPLIT.2] Label tại bar t (horizon h) không overlap với val_start:
+                bar t bị loại nếu t + h_bars > val_start
+  [INV-SPLIT.3] val_start phải match wf_test_dates trong research.yaml
+```
+
 ### Tests
 
 ```text
@@ -1290,6 +1885,8 @@ Trainer.fit() bị BLOCK nếu ExperimentRecord thiếu config_hash hoặc n_tri
 [T-R1.3] DSR reference check: compute DSR của known SR=1.5, T=252, n_trials=1 → so với paper
 [T-R1.4] Model registry: load(save(model)) → identical predictions
 [T-R1.5] ExperimentRecord required trước khi trainer.fit() → fail nếu không có
+[T-R1.6] reproducibility: rerun với same seed + dataset_id → bit-identical predictions
+[T-R1.7] dataset_splitter: không có bar nào trong val tồn tại trong train
 ```
 
 ### Provides to
@@ -1481,11 +2078,18 @@ Kill conditions (check theo thứ tự, dừng tại condition đầu tiên FAIL
 effective_n = T × (1 - autocorrelation_lag1)^2 / signal_halflife
 
 effective_n < 300  → strict mode:    ic_threshold = 0.030, ic_cost_adj = 0.020
-300 ≤ n ≤ 600     → standard mode:  ic_threshold = 0.025, ic_cost_adj = 0.015
+300 ≤ n ≤ 600     → standard mode:  ic_threshold = 0.025, ic_cost_adj = 0.015  ← default
 effective_n > 600  → relaxed mode:   ic_threshold = 0.020, ic_cost_adj = 0.012
 
 [NOTE] Thresholds chỉ strict hơn khi sample nhỏ — không bao giờ loosen khi sample lớn.
 Lý do: IC 0.04+ trên small sample có thể là noise; IC 0.02 stable trên large sample là real.
+
+[IMMUTABILITY CLARIFICATION]:
+research.yaml commit t0_ic_threshold: 0.025 (standard mode — immutable trước T0 run).
+Dynamic mode là COMPUTED OVERRIDE từ effective_n — không phải researcher tuning sau khi
+thấy kết quả. Override phải được log tự động vào ExperimentRecord.config_hash:
+  config_hash bao gồm: {features, horizons, norm, filters, effective_n_mode}
+Nếu researcher thủ công đổi t0_ic_threshold sau khi thấy IC → n_trials += 1.
 ```
 
 ### IC Threshold Justification — Effective Breadth Framework
@@ -1670,7 +2274,8 @@ OUTPUT: T1Result(
         JOIN với PiT universe snapshot (asset_id, không symbol) trước khi compute sector mean.
 
 [T1.4] Capacity Estimate (rough)
-        max_capacity_usd = 0.05 × ADV_bottom_quartile_universe × halflife_bars
+        max_capacity_usd = 0.05 × ADV_bottom_quartile_universe × (halflife_bars / bars_per_day)
+        [ADV đơn vị USD/day; halflife_bars / bars_per_day → chuyển sang days → tích ra USD]
         Kill nếu: max_capacity_usd < min_target_capacity ($100K)
 
 [T1.5] Correlation vs Alpha Registry
@@ -1871,8 +2476,8 @@ OUTPUT: T2Result(
 [T2.3] Stress test (mandatory periods + random high-vol)
         
         Tier 1 — Named Events (mandatory):
-        Luna crash: 2022-05-01 to 2022-05-15 → stress_luna_return
-        FTX collapse: 2022-11-01 to 2022-11-15 → stress_ftx_return
+        Luna crash: 2022-05-07 to 2022-05-14 → stress_luna_return
+        FTX collapse: 2022-11-07 to 2022-11-14 → stress_ftx_return
         Kill nếu: cả hai đều negative (không diversify được với market stress)
         Acceptable: negative ở 1 period, không negative ở cả 2
 
@@ -1933,6 +2538,24 @@ OUTPUT: T2Result(
         halflife_regime[r] = lag tại ACF drops below 0.10
         Kill nếu: halflife_regime[stressed] < 3 bars (edge degrades too fast under stress)
         Warn nếu: halflife_regime variance > 3× across regimes (unstable edge timing)
+
+[T2.9] Cascade Exit Scenario (M-R11 Mode B live/backtest gap)
+        M-R11 Mode B cắt positions mid-bar khi cascade detected — backtest không model điều này.
+        Để quantify gap, bắt buộc chạy Scenario C:
+          Lấy tất cả bars có liquidation_intensity = "cascade" (từ M-R11 historical data)
+          Force exit positions tại open của bar kế tiếp sau cascade bar
+          So sánh: Sharpe_standard vs Sharpe_cascade_exit
+        
+        gap_metric: cascade_impact = (Sharpe_standard - Sharpe_cascade_exit) / Sharpe_standard
+        Kill nếu: cascade_impact > 0.30 (Mode B cuts > 30% Sharpe → alpha not viable in live)
+        
+        T2Result bổ sung:
+          cascade_exit_sharpe:  float  — Sharpe sau forced exit tại cascade bars
+          cascade_frequency:    float  — % cascade bars trong 2-năm sample
+          cascade_impact_pct:   float  — % Sharpe degradation
+        
+        [PREREQUISITE] T2.9 bị BLOCK nếu M-R11 chưa có historical state_vector data.
+        Nếu M-R11 chưa build khi T2 chạy → document gap explicitly, revisit trước Phase 3.
         [NOTE] strategy với halflife < rebalance_freq là incoherent — bạn không thể capture signal nhanh hơn bạn rebalance
 ```
 
@@ -1940,8 +2563,8 @@ OUTPUT: T2Result(
 
 ```text
 Phải test ít nhất:
-  Luna/UST: 2022-05-01 to 2022-05-15
-  FTX:      2022-11-01 to 2022-11-15
+  Luna/UST: 2022-05-07 to 2022-05-14
+  FTX:      2022-11-07 to 2022-11-14
   Thêm khi xảy ra: update list mỗi khi có black swan event mới
 
 Nếu strategy không có position trong period (funding strategy hedge có thể flat)
@@ -2107,10 +2730,10 @@ Kill conditions:
 
 BacktestResult phải log cả hai: sharpe_optimistic, sharpe_conservative
 T2 gate: backtest_sharpe[Scenario_A] ≥ 0.80 AND backtest_sharpe[Scenario_B] ≥ 0.75
-  [RATIONALE] Scenario_B (conservative) không được có gate thấp hơn Scenario_A (optimistic).
-  Logic: strategy phải đủ mạnh để survive realistic conditions, không chỉ look good dưới
-  optimistic assumptions. ≥ 0.75 cho Scenario_B reflect haircut từ lower fill rates
-  (không phải free pass).
+  [RATIONALE] Scenario_B gate (0.75) thấp hơn Scenario_A (0.80) 5 điểm là intentional:
+  Scenario_B có fill rate thấp hơn (conservative: 0.55 vs optimistic: 0.85) → haircut
+  Sharpe tự nhiên. Gate 0.75 không phải "free pass" — nó reflect fill rate discount,
+  không phải relax tiêu chuẩn. Strategy phải survive CẢ HAI scenarios để PASS.
 ```
 
 ### Cross-Exchange Margin Trajectory (F002)
@@ -2518,9 +3141,9 @@ Tracking toàn bộ vòng đời của alpha. Registry là SSOT cho stage transi
 
 ```text
 nghien_cuu/nha_may_alpha/
-  registry.py   — AlphaRecord CRUD, stage transitions
-  cemetery.py   — AlphaAutopsy storage + search
-  lifecycle.py  — stage gate validation
+  alpha_registry.py   — AlphaRecord CRUD, stage transitions
+  alpha_cemetery.py   — AlphaAutopsy storage + search
+  lifecycle.py        — stage gate validation
 ```
 
 ### AlphaRecord Schema
@@ -2825,7 +3448,8 @@ Mỗi bar t, M-R11 compute state_vector[t] gồm 8 dimensions:
   Vấn đề: ood_score > 2.5 × 10 ngày là SLOW PATH — không phù hợp cho crypto black swans
   xảy ra trong giờ (Luna 2022: từ $80 → $0 trong 3 ngày; FTX: halt withdrawals trong 24h).
 
-  Fast-path triggers (check MỖI BAR, không phải daily):
+  Crisis triggers (check MỖI BAR, không phải daily):
+  [NAMING NOTE: "crisis trigger" — đây là RISK MANAGEMENT path, không phải signal generation]
     TRIGGER-F1: btc_1h_return_zscore > 4.0σ (vs rolling 30d vol)
       → Đây là 4σ move trong 1 bar — xảy ra < 0.003% thời gian, nhưng là extreme event
       → Action: IMMEDIATE_SCALE: reduce all positions 50% trong bar tiếp theo
@@ -3078,11 +3702,14 @@ Alert nếu:
 ### Paper vs Live IC Parity Gate
 
 ```text
-Sau 30 ngày paper trade:
+Sau 30 ngày paper trade (interim check — KHÔNG phải SHADOW gate):
+  [NOTE] Đây là early warning check. SHADOW gate thực sự = 60 trading days (M-R9).
   paper_ic_live = IC tính từ actual fills (realized PnL vs signal)
   backtest_ic = IC từ T2
 
-Gate: paper_ic_live ≥ 0.70 × backtest_ic AND paper_sharpe ≥ 0.60
+Gate interim (30 ngày): paper_ic_live ≥ 0.70 × backtest_ic AND paper_sharpe ≥ 0.60
+  → PASS: tiếp tục paper trade đến đủ 60 trading days
+  → FAIL: kill hoặc investigate trước khi tiếp tục
   Pass → proceed to shadow/tiny live
   Fail → investigate:
     - Feature drift? (M-L2 check)
@@ -3805,7 +4432,6 @@ Hard stop trước khi lệnh được gửi. Bảo vệ capital khỏi bugs, mo
   Heartbeat design: main loop ghi timestamp vào file mỗi 30s
   Watchdog check: separate process đọc file mỗi 60s
   Lý do: nếu main process crash silent, positions open không có ai manage = unlimited risk
-```
 
 [RG-16] ADL (Auto-Deleveraging) Risk Monitor
   Perp futures: khi position có ADL rank cao + thị trường extreme, exchange
@@ -3828,6 +4454,7 @@ Hard stop trước khi lệnh được gửi. Bảo vệ capital khỏi bugs, mo
     - Native token price crash > 30% trong 24h
     - Exchange Twitter/status page outage patterns
   Action khi flag: initiate withdrawal của 50% balance, halt new entries
+```
 
 ### Emergency Actions
 
@@ -4277,7 +4904,7 @@ Nếu < 70%: KILL, investigate leakage hoặc cost model
 
 ---
 
-## Phase 4 — HFT Preparation (Tháng 12–24, conditional)
+## Phase 4 — HFT New Project (Tháng 12–24, conditional — rebuild từ đầu)
 
 **Prerequisite cứng:** ≥2 live alphas profitable ≥3 tháng. Không start sớm hơn.
 
@@ -4307,10 +4934,11 @@ M-H1: Event-Driven Simulator
   Binance latency tiers: remote 50ms, optimized 15ms, co-located 3ms
   Viability threshold: Sharpe drop ≤ 40% khi latency = 15ms
 
-M-H2: Hot Path Extraction
-  Extract feature computation sang C extension (cffi wrapper trên ctypes logic)
-  Order book state → C struct (192 bytes, 20-level L2, zero-copy ZMQ)
-  Signal serialization → msgpack (không JSON trên hot path)
+M-H2: HFT Execution Engine (C/Rust — new build)
+  [KHÔNG extract từ Python mid-freq code — viết lại từ đầu theo R4]
+  New C/Rust feature engine: order book state → C struct (192 bytes, 20-level L2, zero-copy ZMQ)
+  Signal serialization → msgpack
+  New hot path: không reuse bất kỳ Python logic hiện tại
 ```
 
 ---
