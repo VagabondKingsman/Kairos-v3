@@ -1,8 +1,8 @@
-﻿<div align="center">
+<div align="center">
  
 <img width="124" height="124" alt="image" src="https://github.com/user-attachments/assets/bf450abd-f468-43fa-9750-464e3ef95651" />
 
-# KAIROS v3.0
+# KAIROS v3.2
 ### **Hệ thống giao dịch định lượng (Quant Trading) tự động hóa toàn diện, với kiến trúc độ trễ cực thấp (Ultra-Low Latency) lấy cảm hứng từ các tiêu chuẩn HFT (HFT-Inspired)**
 
 [![Python](https://img.shields.io/badge/Python-3.13+-blue?style=for-the-badge&logo=python)](https://www.python.org/)
@@ -13,11 +13,11 @@
 
 | Trường | Giá trị |
 |--------|---------|
-| Phiên bản tài liệu | v3.0 |
-| Ngày cập nhật | 2026-05-12 |
+| Phiên bản tài liệu | v3.2 |
+| Ngày cập nhật | 2026-06-01 |
 | Trạng thái | In Development — không dùng làm production reference khi chưa pass Production Checklist (§8) |
 | Phạm vi | Architecture specification & implementation reference cho KAIROS v3 |
-| Test coverage | 107 unit/integration tests — `test/` directory |
+| Test coverage | 254 unit/integration tests — `test/` directory (M-D0: 25, M-D1: 31, M-D2: 37, M-D3: 32, M-D4: 29 tests) |
 
 <div align="left">
  
@@ -165,10 +165,13 @@ KAIROS v3/
 # 🗄️ 2. HỒ DỮ LIỆU (DATA LAKE)
 # ==========================================
 ├── ho_du_lieu/
-│   ├── tho/                            # (Raw) Dữ liệu gốc bất biến từ exchange
-│   │   ├── lich_su_khop_lenh/          # (Trades) symbol=BTCUSDT/date=2024-01-01/...
-│   │   ├── so_lenh_l2/                 # (Orderbook L2) Phân mảnh theo ngày/cặp coin
-│   │   └── funding_liquid/             # (Funding rates & Thanh lý)
+│   ├── tho/                            # (Raw) Immutable Parquet — M-D1 output
+│   │   ├── {exchange}/{symbol}/        # [M-D1] 1h OHLCV bars + liquidation
+│   │   │   └── year={Y}/month={M}/data.parquet
+│   │   ├── {exchange}/{symbol}/long_short/  # [M-D1] 5min Long/Short ratio
+│   │   │   └── year={Y}/month={M}/data.parquet
+│   │   └── onchain/{asset}/{metric}/   # [M-D1] Hourly on-chain (CryptoQuant)
+│   │       └── year={Y}/month={M}/data.parquet
 │   ├── da_xu_ly/                       # Dữ liệu đã làm sạch & đồng bộ
 │   ├── kho_dac_trung/                  # (Feature Store)
 │   │   ├── offline/                    # Phục vụ train AI
@@ -178,23 +181,46 @@ KAIROS v3/
 │   │   ├── nhat_ky_wal/                # kairos.wal, wal_log.jsonl, funding_dedup.jsonl
 │   │   ├── snapshot/                   # state.json (KairosState atomic checkpoint)
 │   │   ├── phien_giao_dich/            # sessions_YYYY-MM.ndjson / .parquet (P&L ledger)
-│   │   └── audit/                      # [NEW] Exit audit trail (daily rotation, 30-day retention)
+│   │   └── audit/                      # Exit audit trail (daily rotation, 30-day retention)
 │   ├── gia_lap/                        # Paper trading output
 │   │   ├── paper_wal.jsonl             # Paper WAL
 │   │   ├── paper_snapshot.json         # Paper state snapshot
 │   │   ├── paper_audit_*.jsonl         # Fill audit trail (line-buffered)
 │   │   └── parquet/                    # Converted Parquet (audit_to_parquet)
+│   ├── settlement_spool/{exchange}/    # [M-D1] Persistent spool cho settlement buffer
+│   ├── dlq/{exchange}/                 # [M-D1] Dead Letter Queue per-exchange
+│   ├── ket_noi/{exchange}/             # [M-D1] WS gap logs (gaps_{date}.jsonl)
+│   ├── quarantine/                     # [M-D1] Orphan Parquet quarantine
 │   ├── giam_sat/                       # Monitoring & alerting output
 │   │   └── canh_bao/                   # Alert fallback logs (RotatingFileHandler)
 │   └── he_thong/                       # System sentinel files (gitignored — runtime only)
 │       ├── system.KILLED               # Kill-switch JSON (blocks all Gateway restarts)
-│       └── FLATTEN_LOCK                # [NEW] Written by EmergencyFlattener (blocks all new trades)
+│       └── FLATTEN_LOCK                # Written by EmergencyFlattener (blocks all new trades)
 │
 # ==========================================
 # ⚡ 3. ĐỘNG CƠ DỮ LIỆU (DATA ENGINE)
 # ==========================================
 ├── dong_co_du_lieu/
-│   ├── thu_thap/                       # (Collector)
+│   ├── quan_ly_phien_ban/              # [M-D0] Data Lineage Registry (8 files)
+│   │   ├── __init__.py                 # Public API export
+│   │   ├── _locking.py                 # Cross-platform file lock (msvcrt/fcntl)
+│   │   ├── dataset_record.py           # DatasetRecord + content/schema hash + write_and_register()
+│   │   ├── exceptions.py               # Custom exception hierarchy (LineageError, PIT failures)
+│   │   ├── lineage_registry.py         # Append-only JSONL registry, as_of() PIT query
+│   │   ├── pit_verifier.py             # verify_pit_production() stratified sampling (500+ rows)
+│   │   ├── symbol_lifecycle_poller.py   # Daemon daily poll → state-based interval tracking
+│   │   └── verification_registry.py    # VerificationRecord + verification log
+│   ├── thu_thap/                       # [M-D1] Raw Data Ingestion (11 modules)
+│   │   ├── bar_types.py                # BarData dataclass — M-D1 schema đầy đủ
+│   │   ├── bar_processor.py            # compute_dq_flags, attach_oi_to_bar, write_parquet_atomic
+│   │   ├── settlement_buffer.py        # T+5min funding buffer + persistent spool
+│   │   ├── dead_letter_queue.py        # Rolling 1h window per-exchange, route_to_dlq
+│   │   ├── funding_interval_cache.py   # Settlement minutes cache + funding poll loop
+│   │   ├── liquidation_aggregator.py   # Thread-safe per-bar LiquidationEvent aggregation
+│   │   ├── aux_parquet_writer.py       # Long/Short ratio + On-chain Parquet writer
+│   │   ├── schema_validator.py         # Schema validation: OHLCV + Long/Short + On-chain
+│   │   ├── startup_routines.py         # Orphan scan + SIGTERM handler
+│   │   ├── symbol_remapper.py          # Exchange symbol → canonical asset_id (date-range)
 │   │   ├── websocket/                  # Real-time streaming
 │   │   │   ├── binance_ws.py           # BinanceGateway
 │   │   │   ├── okx_ws.py               # OkxGateway
@@ -209,7 +235,19 @@ KAIROS v3/
 │   │   └── bo_loc/
 │   │       ├── orderbook_engine.py     # L2 Sync Engine
 │   │       └── ohlc_engine.py          # OHLCV Aggregator
-│   ├── xu_ly_lo/                       # (Batch Processor)
+│   ├── xu_ly_lo/                       # [M-D2] Batch Processor — Gap Reconciliation (8 files)
+│   │   ├── reconcile.py                # [M-D2] Main orchestrator steps 0–7, CLI + batch runner
+│   │   ├── schema_validator.py         # [M-D2] MD2_SCHEMA explicit PyArrow, write_with_schema_version()
+│   │   ├── maintenance_event_logger.py # [M-D2] Daemon poll → maintenance_log_{date}.parquet + heartbeat
+│   │   ├── gap_detector.py             # [M-D2] Missing/zombie detection, gap manifest (immutable fields)
+│   │   ├── rest_filler.py              # [M-D2] REST fill, continuity + boundary validation (async)
+│   │   ├── quality_tagger.py           # [M-D2] data_quality 0–4, coverage report
+│   │   ├── reconcile_funding_rates.py  # [M-D2] funding_rate_raw, anti-lookahead, stale propagation
+│   │   ├── pit_universe.py             # [M-D3] PiTUniverseManager, AssetRegistry, snapshot builder
+│   │   ├── symbol_remapper.py          # [M-D3] RENAME/FORK corporate actions, symbol history
+│   │   ├── seed_sector_assignments.py  # [M-D3] One-time seeder: sector_map.yaml → DB
+│   │   ├── feature_cache.py            # [M-D4] FeatureCache, atomic write, cache_hash, BTC-first
+│   │   └── pre_aggregate_l2.py         # [M-D4] L2→OFI, binary snapshot store (KHÔNG delete)
 │   └── ong_dan_dac_trung/              # (Feature Pipeline) <10µs/tick
 │       └── online/
 │           ├── feature_registry.py     # FEATURE_REGISTRY + CompiledPlan
@@ -219,6 +257,9 @@ KAIROS v3/
 # 🧪 4. PHÒNG NGHIÊN CỨU (RESEARCH & REPLAY)
 # ==========================================
 ├── nghien_cuu/
+│   ├── khung_alpha/                    # [M-D4] Alpha Research Framework (3 files)
+│   │   ├── feature_spec.py             # [M-D4] FeatureSpec dataclass, 12 entries, DAG validation
+│   │   └── feature_registry.py         # [M-D4] FEATURE_REGISTRY 12 fns, IncrementalFeatureEngine
 │   ├── so_tay_jupyter/                 # (Notebooks)
 │   ├── nha_may_alpha/                  # (Alpha Factory)
 │   ├── dong_co_phat_lai/               # (REPLAY ENGINE)
@@ -361,7 +402,7 @@ KAIROS v3/
 │       └── tracker.py                  # 4-segment latency tracker
 ├── kiem_thu/
 │   └── san_gia_lap/                    # Mock Exchange
-├── test/                               # Unit & Integration Tests (107 tests total)
+├── test/                               # Unit & Integration Tests (163 tests total)
 │   ├── test_live_runner.py             # Live Runner — 14 components, 1217 dòng
 │   ├── test_chaos_risk.py              # Pre-trade Risk Gate adversarial scenarios
 │   ├── test_execution_pipeline.py      # Execution layer: Retry, TokenBucket, RiskEngine, Adapters
@@ -370,10 +411,18 @@ KAIROS v3/
 │   ├── test_signal_engine.py           # ML signal engine
 │   ├── test_profiler.py                # Performance profiling
 │   ├── test_state.py                   # KairosState WAL/snapshot
-│   ├── test_ws_gateway_fixes.py        # WebSocket gateway regression
-│   ├── test_position_sizer.py          # [NEW] PositionSizer — 14 tests (qty, anti-flip, lot rounding)
-│   ├── test_strategies.py              # [NEW] Exit strategies — 32 tests (6 strategies + composite)
-│   └── test_exit_coordinator.py        # [NEW] ExitCoordinator — 18 tests (state machine, cooldown, quarantine)
+│   ├── test_position_sizer.py          # PositionSizer — 14 tests (qty, anti-flip, lot rounding)
+│   ├── test_strategies.py              # Exit strategies — 32 tests (6 strategies + composite)
+│   ├── test_exit_coordinator.py        # ExitCoordinator — 18 tests (state machine, cooldown, quarantine)
+│   ├── test_exit_e2e.py                # Exit system end-to-end integration
+│   ├── test_d0_lineage.py              # [M-D0] Data Lineage Registry — 25 tests
+│   ├── test_d1_ingestion.py            # [M-D1] Raw Data Ingestion — 31 tests
+│   ├── test_d2_gap_reconciliation.py   # [M-D2] Gap Reconciliation — 37 tests (T-D2.1→T-D2.32)
+│   ├── test_d3_pit_universe.py         # [M-D3] PiT Universe Manager — 32 tests (T-D3.1→T-D3.30)
+│   ├── test_d4_feature_cache.py        # [M-D4] Feature Cache — 29 tests (T-D4.1→T-D4.19)
+│   ├── test_paper_adapter_queries.py   # Paper adapter query tests (10 tests)
+│   ├── test_position_funding.py        # Position + Funding tests (13 tests)
+│   └── test_session_pnl.py             # Session + PnL tests (20 tests)
 │
 # ==========================================
 # 🚀 10. KỊCH BẢN VẬN HÀNH (SCRIPTS)
@@ -394,6 +443,11 @@ KAIROS v3/
 
 | Module | File chính | Dòng | Trạng thái | Test |
 |--------|-----------|------|------------|------|
+| **M-D0: Data Lineage** | `quan_ly_phien_ban/` (8 files) | ~1600 | ✅ Implemented | `test_d0_lineage.py` (25 tests) |
+| **M-D1: Raw Ingestion** | `thu_thap/` (11 modules) | ~2200 | ✅ Implemented | `test_d1_ingestion.py` (31 tests) |
+| **M-D2: Gap Reconciliation** | `xu_ly_lo/` (8 files) | ~2800 | ✅ Implemented | `test_d2_gap_reconciliation.py` (37 tests) |
+| **M-D3: PiT Universe Manager** | `xu_ly_lo/` (3 files) | ~750 | ✅ Implemented | `test_d3_pit_universe.py` (32 tests) |
+| **M-D4: Feature Cache** | `xu_ly_lo/` (2 files) + `khung_alpha/` (3 files) | ~900 | ✅ Implemented | `test_d4_feature_cache.py` (29 tests) |
 | Live Orchestrator | `live_runner.py` | 1021 | ✅ Implemented | `test_live_runner.py` (14 components) |
 | Paper EMS Adapter | `paper_ems_adapter.py` | 833 | ✅ Implemented | `test_paper_adapter_queries.py` (10 tests) |
 | Execution Gateway | `vong_lap_su_kien.py` | 1250 | ✅ Implemented | `test_execution_pipeline.py` |
@@ -506,13 +560,13 @@ live:
 
 Kiến trúc Cold-Storage, tối ưu cho Backtest Vectorized hàng tỷ rows.
 
-#### Dữ liệu thô (`ho_du_lieu/tho/`)
+#### Dữ liệu thô (`ho_du_lieu/tho/`) — M-D1 Output
 
-Không bao giờ chỉnh sửa (Immutable). Lưu dưới định dạng Parquet nén siêu tốc theo chuẩn **Hive Partitioning** (`symbol=BTCUSDT/date=2024-01-01/part-000.parquet`):
+Không bao giờ chỉnh sửa (Immutable). Lưu dưới định dạng Parquet nén Snappy theo chuẩn **Year/Month Partitioning**. Mọi Parquet file sau write PHẢI đăng ký với M-D0 `LineageRegistry`.
 
-* `lich_su_khop_lenh/` — Raw tick data (trades): price, qty, timestamp, is_buyer_maker.
-* `so_lenh_l2/` — Orderbook L2 snapshots: top 20 bids/asks, phân mảnh theo ngày.
-* `funding_liquid/` — Funding rates & Liquidation events.
+* `{exchange}/{symbol}/year={Y}/month={M}/data.parquet` — **1h OHLCV Bar** (17 columns): event_time_ns, OHLCV, funding_rate, oi_usdt, liquidation_buy/sell_usdt, dq_flags, is_settlement_bar, is_backfill.
+* `{exchange}/{symbol}/long_short/year={Y}/month={M}/data.parquet` — **Long/Short Ratio** (5min, 7 columns): timestamp_ns, long_short_ratio, long/short_account_ratio.
+* `onchain/{asset}/{metric}/year={Y}/month={M}/data.parquet` — **On-chain Data** (hourly, 6 columns): exchange_reserve, exchange_netflow, stablecoin_supply từ CryptoQuant.
 
 #### Kho Đặc Trưng Online (`ho_du_lieu/kho_dac_trung/online/memory_store.py`)
 
@@ -599,10 +653,74 @@ if effective_mask == 0:
 
 <img width="1920" height="1080" alt="image" src="https://github.com/user-attachments/assets/e35efc49-1df3-4ce2-8247-ea6420478ac5" />
 
-#### Thu thập dữ liệu (`dong_co_du_lieu/thu_thap/`)
+#### M-D0: Data Lineage Registry ✅ (`dong_co_du_lieu/quan_ly_phien_ban/` — 8 files)
 
-* **WebSocket Gateway** (Binance, OKX, Bybit): Streaming dữ liệu thị trường realtime. Mỗi sàn có Gateway riêng biệt (`binance_ws.py`, `okx_ws.py`, `bybit_ws.py`) với logic parse và error-handling tối ưu.
-* **REST API Pollers**: Polling định kỳ dữ liệu bổ sung — Open Interest (5m), Funding Rate (1h), Long/Short Ratio (5m), Klines (1m). Bao gồm cả `onchain_rest.py` (CryptoQuant: BTC/ETH reserve + netflow).
+Immutable dataset registry — mọi Parquet artifact đều phải đăng ký trước khi dùng trong backtest.
+
+* `dataset_record.py` — `DatasetRecord` + `VerificationRecord`, canonical Arrow IPC hash, `write_and_register()` atomic
+* `lineage_registry.py` — Append-only JSONL, `as_of()` PIT query, orphan sweep
+* `pit_verifier.py` — `verify_pit_production()` stratified 500+ rows, timestamp unit heuristic (s/ms/ns)
+* `symbol_lifecycle_poller.py` — Daemon daily poll → state-based interval tracking
+* **Tests:** 25 unit tests (`test/test_d0_lineage.py`)
+
+#### M-D1: Raw Data Ingestion ✅ (`dong_co_du_lieu/thu_thap/` — 10 new modules)
+
+Nhận bar từ WS/REST → QC → buffer settlement → write Parquet → register M-D0.
+
+* **WebSocket Gateway** (Binance, OKX, Bybit): `binance_ws.py`, `okx_ws.py`, `bybit_ws.py`
+* **REST API Pollers**: OI (5m), Funding (1h), L/S Ratio (5m), Klines (1m), On-chain (CryptoQuant)
+* `bar_processor.py` — `compute_dq_flags()` 4-bit bitmask, `attach_oi_to_bar()` (INV-D1.11 >= boundary), `write_parquet_atomic()`
+* `settlement_buffer.py` — T+5min funding buffer + persistent spool (int64 serialized as string, INV-D1.24)
+* `dead_letter_queue.py` — Rolling 1h window per-exchange, alert khi rate > 1% và > 100 msgs
+* `funding_interval_cache.py` — Settlement minutes cache (minutes not hours, INV-D1.5), Bybit stale detection
+* `liquidation_aggregator.py` — Thread-safe per-bar aggregation của `LiquidationEvent`
+* `aux_parquet_writer.py` — Long/Short ratio + On-chain Parquet riêng biệt
+* `schema_validator.py` — 3 schemas: OHLCV (17 cols), Long/Short (7 cols), On-chain (6 cols)
+* `startup_routines.py` — Orphan scan + SIGTERM handler
+
+**Output:** `ho_du_lieu/tho/{exchange}/{symbol}/` (OHLCV+liquidation) | `.../long_short/` (5min) | `.../onchain/` (hourly)
+* **Tests:** 31 unit tests (`test/test_d1_ingestion.py`)
+
+#### M-D2: Gap Reconciliation ✅ (`dong_co_du_lieu/xu_ly_lo/` — 8 files)
+
+Nightly batch chạy lúc 02:00 UTC, nhận raw bars từ M-D1 → phát hiện gaps → fill từ REST → gán `data_quality` → merge funding rates → ghi clean Parquet.
+
+* `reconcile.py` — Orchestrator 7 bước: daemon heartbeat check → lifecycle → maintenance windows → gap manifest → fill/classify → funding merge → atomic write + coverage report
+* `schema_validator.py` — `MD2_SCHEMA` explicit PyArrow (26 columns), `write_with_schema_version()` atomic, schema_version=1 mandatory
+* `maintenance_event_logger.py` — Daemon poll exchange status mỗi 5min → `maintenance_log_{date}.parquet` + `daemon_heartbeat.json`; stale > 15min → quality=3
+* `gap_detector.py` — Missing bar scan + zombie volume detection (MAD robust_zscore, two-tail, baseline từ history only — không look-ahead); gap manifest immutable detection fields
+* `rest_filler.py` — `fill_gap() → (DataFrame, quality, reason)` với reason authoritative cho fill_outcome; intra-gap continuity (4 checks) + boundary validation symmetric; HTTP 418/429 backoff
+* `quality_tagger.py` — `data_quality` 0–4; daemon stale → mark bars với quality=3 (không skip); `compute_coverage_report()` aggregate từ batch runner
+* `reconcile_funding_rates.py` — `funding_rate_raw` + anti-lookahead (`funding_published_ns ≤ close_time_ns`); `received_ns` set sau response; `_check_funding_cache_freshness()` trong `load_funding_schedule()`; FAIL LOUD nếu cache miss
+
+**Output:** `ho_du_lieu/da_xu_ly/` (clean bars, 26 cols) | `ho_du_lieu/gap_manifest/` (audit) | `ho_du_lieu/bao_cao_phu_song/` (daily coverage)
+
+**`data_quality` enum:** 0=WS native | 1=REST filled | 2=suspect (zombie/boundary) | 3=missing | 4=scheduled_maintenance
+* **Tests:** 37 unit tests (`test/test_d2_gap_reconciliation.py`) — T-D2.1 → T-D2.32
+
+#### M-D3: Point-in-Time Universe Manager ✅ (`dong_co_du_lieu/xu_ly_lo/` — 3 files)
+
+**Anti-survivorship-bias module quan trọng nhất.** Quản lý universe theo `known_at` semantics: `get_universe(date)` chỉ include assets mà KAIROS biết trước 00:00 UTC của ngày đó.
+
+* `pit_universe.py` — `make_asset_id()` UUID v5 per listing event (deterministic, tránh ticker collision LUNA/LUNA2); `AssetRegistry` SQLite (6 tables, WAL mode, write-once trigger); `PiTUniverseManager.get_universe()` / `get_universe_history()` / `get_asset_id()`; `build_daily_snapshot()` eligibility formula (ADV, OI, coverage, funding dysfunction, stablecoin); `process_exchange_poll()` listing/delist detection; circuit breaker >50% universe missing; `pit_audit()` verify INV-D3.1/D3.2/D3.3/D3.20
+* `symbol_remapper.py` — `apply_rename()` RENAME: asset_id GIỮNGUYÊN; `apply_fork()` FORK: new asset_id; `flag_ambiguous_rename()` → review queue JSONL cho manual review
+* `seed_sector_assignments.py` — One-time seeder: `cau_hinh/sector_map.yaml` → `sector_assignments` table; explicit override cho LUNA-style ticker collision
+
+**Lifecycle (Phase 0):** `ACTIVE` → `SUSPECTED_DELIST` → `DELISTED` (terminal). False alarm: `SUSPECTED_DELIST` → `ACTIVE`. Dual condition confirm: ≥3 polls + ≥12h wall-clock.
+
+**Output:** `ho_du_lieu/lich_su_vu_tru/{date}__{built_at}.parquet` (versioned immutable) + `manifest.json` (append-only)
+* **Tests:** 32 unit tests (`test/test_d3_pit_universe.py`) — T-D3.1 → T-D3.30
+
+#### M-D4: Feature Cache ✅ (`xu_ly_lo/` + `nghien_cuu/khung_alpha/` — 5 files)
+
+Pre-compute và cache feature matrices cho research. Cache invalidated by feature logic hash khi logic thay đổi.
+
+* `khung_alpha/feature_spec.py` — `FeatureSpec` frozen dataclass (11 fields); `FEATURE_SPECS` 12 entries (return_1h/4h, funding_raw/z, oi_1h/4h, volume_ratio, basis, btc_neutral_1h/4h, spread, book_pressure); DAG cycle validation tại import time (INV-D4.24)
+* `khung_alpha/feature_registry.py` — `FEATURE_REGISTRY` 12 module-level `FeatureFn`; Winsorize [1%,99%] rolling 90d cho return_1h/4h; 5×IQR outlier flag cho funding_raw + oi_change; Welford expanding z-score funding_z_30d (INV-D4.19); Rolling OLS 504 bars btc_neutral + BTC 20% coverage check (INV-D4.22); Phase 0 L2 features: `warm=True` ngay tại bar 1, return NaN (INV-D4.27); `IncrementalFeatureEngine` topo-sort + sync-emit + inject_context (INV-D4.28); `FeatureSpecRegistry` — M-D0 PIT Verifier bridge
+* `xu_ly_lo/feature_cache.py` — `compute_feature_logic_hash()` SHA-256(AST bundle); 12-char `cache_hash`; `write_cache()` atomic + provenance metadata (INV-D4.21/23); `FeatureCache.get_or_compute()` idempotent, BTC-first ordering, stale context fix
+* `xu_ly_lo/pre_aggregate_l2.py` — `L2Snapshot` binary encode/decode; `store_raw_snapshot()` append daily `.bin` (**KHÔNG BAO GIỜ delete**); OFI formula Cont-Kukanov-Stoikov 2014; `compute_book_pressure_5min()` 12 windows, <6 → NaN (INV-D4.11b)
+
+**Cache path:** `ho_du_lieu/kho_dac_trung/offline/{hash_12}/{asset_id}__{start}_{end}.parquet`
 
 #### Xử lý dòng (`dong_co_du_lieu/xu_ly_dong/bo_loc/`)
 
